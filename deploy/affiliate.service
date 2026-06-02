@@ -1,0 +1,19 @@
+[Unit]
+Description=CPA Lead Generation & UPI Payout Suite
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/affiliate
+Environment="PATH=/var/www/affiliate/venv/bin"
+Environment="FLASK_ENV=production"
+ExecStart=/var/www/affiliate/venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:5000 --timeout 120 app:app
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=affiliate
+
+[Install]
+WantedBy=multi-user.target

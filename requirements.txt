@@ -1,0 +1,17 @@
+# Automated Marketing Pipeline — Dependencies
+# Install: pip install -r requirements.txt
+
+Flask>=3.0
+requests>=2.31
+beautifulsoup4>=4.12
+Pillow>=10.0
+google-genai>=1.0
+python-dotenv>=1.0
+playwright>=1.40
+APScheduler>=3.10
+pytz>=2024.1
+tweepy>=4.14
+moviepy>=2.0
+gTTS>=2.5
+
+
