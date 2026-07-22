@@ -533,6 +533,23 @@ def cleanup_old_video_assets():
         print(f"[scheduler] Video assets cleanup sweep failed: {exc}")
 
 
+def maintain_sqlite_database():
+    """
+    Executes SQLite WAL truncation (PRAGMA wal_checkpoint(TRUNCATE)) and
+    page defragmentation (VACUUM) to prevent database file bloat.
+    """
+    print("[scheduler] Starting automated database maintenance (WAL checkpoint & VACUUM)...")
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        cursor.execute("VACUUM;")
+        conn.close()
+        print("[scheduler] Database maintenance completed successfully.")
+    except Exception as exc:
+        print(f"[scheduler] Database maintenance failed: {exc}")
+
+
 # ─── public API ───────────────────────────────────────────────────────────────
 
 def start(flask_app):
@@ -621,8 +638,22 @@ def start(flask_app):
         replace_existing=True,
     )
 
+    # Register database WAL maintenance & VACUUM daily at 04:00 AM IST
+    _scheduler.add_job(
+        func=maintain_sqlite_database,
+        trigger="cron",
+        hour=4,
+        minute=0,
+        timezone=IST,
+        id="db_maintenance_daily",
+        name="Daily DB Maintenance (04:00 IST)",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+
     _scheduler.start()
-    print("[scheduler] APScheduler started — 9 jobs registered (IST)")
+    print("[scheduler] APScheduler started — 10 jobs registered (IST)")
 
     # Persist initial next_run_at values
     for job in JOB_REGISTRY:

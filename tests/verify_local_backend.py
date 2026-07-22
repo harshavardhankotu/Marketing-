@@ -309,6 +309,44 @@ def main():
         print(f"[FAIL] Negative Balance Guard Test failed: {e}")
         sys.exit(1)
 
+    # =========================================================================
+    # STEP 5: HEALTH ENDPOINTS & SECURITY HEADERS TEST
+    # =========================================================================
+    print_separator("STEP 5: HEALTH ENDPOINTS, SECURITY HEADERS & INPUT VALIDATION TEST")
+
+    try:
+        # 1. Test /health endpoint
+        health_url = f"{BASE_URL}/health"
+        print(f"[INFO] Sending GET to {health_url}")
+        r_health = session.get(health_url, timeout=10.0)
+        assert r_health.status_code == 200, f"Expected 200 OK from /health, got {r_health.status_code}"
+        health_json = r_health.json()
+        assert health_json.get("status") == "ok", f"Expected 'status': 'ok', got {health_json}"
+        assert health_json.get("database", {}).get("connected") is True, "Database should be connected"
+        print(f"[PASS] Liveness & Readiness Health Endpoint verified: status 'ok', DB tables: {health_json['database']['tables']}")
+
+        # 2. Test HTTP Security Headers
+        assert r_health.headers.get("X-Content-Type-Options") == "nosniff", "Missing X-Content-Type-Options header"
+        assert r_health.headers.get("X-Frame-Options") == "SAMEORIGIN", "Missing X-Frame-Options header"
+        print("[PASS] HTTP Security response headers successfully verified.")
+
+        # 3. Test Invalid UPI Regex Rejection
+        bad_upi_payload = {"upi_id": "invalid_upi_handle", "amount": 100.0}
+        r_bad_upi = session.post(payout_url, json=bad_upi_payload, headers=payout_headers, timeout=10.0)
+        assert r_bad_upi.status_code == 400, f"Expected 400 for invalid UPI ID, got {r_bad_upi.status_code}"
+        print("[PASS] Invalid UPI ID format rejected with 400 Bad Request.")
+
+        # 4. Test OpenAPI Specs & Swagger Docs
+        swagger_url = f"{BASE_URL}/api/swagger.json"
+        r_swagger = session.get(swagger_url, timeout=10.0)
+        assert r_swagger.status_code == 200, f"Expected 200 from {swagger_url}, got {r_swagger.status_code}"
+        assert "openapi" in r_swagger.json(), "Invalid Swagger OpenAPI spec structure"
+        print("[PASS] OpenAPI 3.0 specification endpoint verified.")
+
+    except Exception as e:
+        print(f"[FAIL] Health & Security validation test failed: {e}")
+        sys.exit(1)
+
     print_separator("ALL TESTS COMPLETED SUCCESSFULLY!")
     print("[SUCCESS] Database and Flask API systems are robust, secure, and production-ready!")
     print("================================================================================\n")

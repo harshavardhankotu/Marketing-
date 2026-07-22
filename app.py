@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 import hmac
 import hashlib
+import re
 
 # Import Flask-Login, Flask-WTF, Flask-Limiter, and bcrypt
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -104,9 +105,15 @@ def ratelimit_handler(e):
     response.headers["Retry-After"] = str(retry_after)
     return response
 
-# Global response filter to automatically inject CSRF token into fetch calls in the browser
+# Global response filter to automatically inject CSRF token into fetch calls and security headers
 @app.after_request
 def inject_csrf_token(response):
+    # Inject HTTP security headers on all responses
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+
     if response.content_type and "text/html" in response.content_type:
         token = generate_csrf()
         script = f"""
@@ -365,6 +372,84 @@ def history_page():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# LIVENESS, READINESS & SYSTEM HEALTH ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.route('/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
+@csrf.exempt
+def health_check():
+    """Returns application health status, database connectivity, disk space, and scheduler state."""
+    health = {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": {"connected": False, "tables": 0},
+        "disk": {"free_mb": 0},
+        "scheduler": {"active": False, "jobs": 0}
+    }
+    try:
+        # Check SQLite DB
+        import db_manager
+        conn = sqlite3.connect(db_manager.DB_PATH, timeout=5.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table'")
+        health["database"]["tables"] = cursor.fetchone()[0]
+        health["database"]["connected"] = True
+        conn.close()
+
+        # Check Disk Space
+        import shutil
+        stat = shutil.disk_usage(os.path.dirname(db_manager.DB_PATH))
+        health["disk"]["free_mb"] = round(stat.free / (1024 * 1024), 2)
+
+        # Check Scheduler Status
+        import scheduler_engine
+        sch_status = scheduler_engine.get_status()
+        health["scheduler"]["active"] = sch_status.get("scheduler_running", False)
+        health["scheduler"]["jobs"] = len(sch_status.get("jobs", []))
+
+    except Exception as e:
+        health["status"] = "degraded"
+        health["error"] = str(e)
+
+    status_code = 200 if health["status"] == "ok" else 503
+    return jsonify(health), status_code
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SWAGGER & OPENAPI SPECIFICATION ROUTES
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.route('/api/docs', methods=['GET'])
+def api_docs_ui():
+    """Renders interactive Swagger UI documentation."""
+    return render_template('docs.html')
+
+
+@app.route('/api/swagger.json', methods=['GET'])
+@csrf.exempt
+def api_swagger_json():
+    """Returns OpenAPI 3.0 specification for all suite APIs."""
+    spec = {
+        "openapi": "3.0.0",
+        "info": {
+            "title": "Automated CPA Lead Arbitrage & Payout API",
+            "version": "1.0.0",
+            "description": "Enterprise API specification for CPA lead routing, dynamic number insertion (DNI), retargeting sweeps, and UPI cashback payouts."
+        },
+        "paths": {
+            "/health": {"get": {"summary": "Liveness & Readiness Health Check", "responses": {"200": {"description": "System Healthy"}}}},
+            "/api/sectors": {"get": {"summary": "Get Available Marketing Sectors", "responses": {"200": {"description": "List of active sectors"}}}},
+            "/api/run_pipeline": {"post": {"summary": "Run 19-Step Marketing Pipeline", "responses": {"200": {"description": "Pipeline Execution Result"}}}},
+            "/api/wallet": {"get": {"summary": "Fetch User Wallet & Payout History", "responses": {"200": {"description": "Wallet balance and payouts"}}}},
+            "/api/payout": {"post": {"summary": "Request Instant UPI Cashback Payout", "responses": {"200": {"description": "Payout confirmation"}}}},
+            "/postback/cpa_lead": {"post": {"summary": "CPA Conversion HMAC Postback Webhook", "responses": {"200": {"description": "Conversion processed"}}}}
+        }
+    }
+    return jsonify(spec)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # SECTORS
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -389,9 +474,13 @@ def get_sectors():
 @limiter.limit("30 per minute")
 def run_pipeline():
     try:
+        from product_scraper import SECTOR_CONFIG
         data = request.json or {}
         sector = data.get('sector', 'auto_insurance')
         dry_run = data.get('dry_run', False)
+
+        if sector not in SECTOR_CONFIG:
+            return jsonify({"status": "error", "message": f"Invalid sector '{sector}'"}), 400
 
         if dry_run:
             return jsonify({
@@ -1089,6 +1178,8 @@ def process_payout():
         
         if not upi_id:
             return jsonify({"status": "error", "message": "UPI ID is required"}), 400
+        if not re.match(r'^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$', upi_id):
+            return jsonify({"status": "error", "message": "Invalid UPI ID format. Example: handle@bank"}), 400
         if amount <= 0:
             return jsonify({"status": "error", "message": "Amount must be greater than zero"}), 400
             
@@ -1126,6 +1217,9 @@ def postback_cpa_lead():
         commission_amount = float(data.get("commission_amount") or data.get("commission_value") or 0.0)
         transaction_id = data.get("transaction_id")
         network_name = data.get("network_name") or "mock_network"
+        
+        if sale_amount < 0 or commission_amount < 0:
+            return jsonify({"status": "error", "message": "Sale and commission amounts cannot be negative"}), 400
         
         # Telephony fields
         phone_val = data.get("phone_number") or data.get("tracking_number") or data.get("phone")
