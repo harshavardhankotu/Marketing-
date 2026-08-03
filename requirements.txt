@@ -22,5 +22,8 @@ numpy>=1.26
 # Social distribution (Twitter/X)
 tweepy>=4.14
 
+# Zero-cost X/Twitter browser automation (optional — enable PLAYWRIGHT_X_ENABLED)
+# playwright>=1.44
+
 # Testing
 pytest>=8.0

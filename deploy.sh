@@ -147,7 +147,7 @@ systemctl enable affiliate.service
 # ------------------------------------------------------------------------------
 log_info "Setting secure directory permissions..."
 # Ensure the database data directory exists
-mkdir -p data data/output assets
+mkdir -p data data/output data/playwright assets
 
 # Change ownership of the entire directory to www-data (system user running Gunicorn & Caddy)
 chown -R www-data:www-data "$DEPLOY_DIR"

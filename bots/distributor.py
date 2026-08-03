@@ -28,6 +28,7 @@ from config import (
     TWITTER_API_KEY, TWITTER_API_SECRET,
     TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET,
     INSTAGRAM_ACCOUNT_ID, META_ACCESS_TOKEN,
+    PLAYWRIGHT_X_ENABLED, PLAYWRIGHT_HEADLESS,
 )  # noqa: E402
 
 from quota_manager import (
@@ -123,8 +124,15 @@ def mock_post_to_twitter(post_data):
 
 
 def live_post_to_twitter(post_data):
-    """Post a tweet (optionally with an image) via the Tweepy SDK."""
+    """Post a tweet (optionally with an image) via the Tweepy SDK.
+
+    When the paid Twitter API credentials are absent, falls back to the
+    zero-cost Playwright browser automation helper (if enabled) and finally
+    to a mock so the pipeline never hard-fails.
+    """
     if not all(_credential_ok(v) for v in (TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET)):
+        if PLAYWRIGHT_X_ENABLED:
+            return playwright_post_to_twitter(post_data)
         return mock_post_to_twitter(post_data)
 
     if check_quota("twitter") == "BLOCKED":
@@ -162,6 +170,59 @@ def live_post_to_twitter(post_data):
     except Exception as exc:
         record_breaker_failure("twitter")
         print(f"  [Twitter/X] Posting failed: {exc}")
+        return mock_post_to_twitter(post_data)
+
+
+def playwright_post_to_twitter(post_data):
+    """
+    Zero-cost X/Twitter posting via Playwright browser automation.
+
+    Uses a persistent Chromium profile stored under ``data/playwright/`` that
+    must be logged in to x.com once (log in interactively with the Playwright
+    helper, then the profile is reused headlessly). Posting only proceeds when
+    the session is authenticated; otherwise it returns a mock and raises
+    nothing — engagement is never fabricated.
+    """
+    from config import DATA_DIR
+    from playwright.sync_api import sync_playwright
+
+    caption = _safe_caption(post_data.get("caption", ""), 280)
+    image_file = _resolve_media(post_data.get("graphic_path"))
+    user_data_dir = os.path.join(DATA_DIR, "playwright")
+
+    try:
+        consume_quota("twitter")
+    except Exception:
+        pass
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch_persistent_context(
+                user_data_dir, headless=PLAYWRIGHT_HEADLESS
+            )
+            try:
+                page = browser.new_page()
+                page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=30000)
+                # Confirm we are authenticated.
+                if "login" in page.url or not page.locator("input[data-testid='tweetTextarea_0']").count():
+                    print("  [Twitter/X] Not logged in (Playwright). Use mock.")
+                    return mock_post_to_twitter(post_data)
+
+                composer = page.locator("input[data-testid='tweetTextarea_0']")
+                composer.click()
+                composer.fill(caption)
+
+                if image_file:
+                    page.set_input_files("input[data-testid='fileInput']", image_file)
+
+                page.locator("div[data-testid='tweetButtonInline']").click()
+                page.wait_for_timeout(4000)
+                return {"platform": "Twitter/X", "status": "Success (Playwright)", "link": "https://x.com/YourAgency"}
+            finally:
+                browser.close()
+    except Exception as exc:
+        record_breaker_failure("twitter")
+        print(f"  [Twitter/X] Playwright posting failed: {exc}")
         return mock_post_to_twitter(post_data)
 
 

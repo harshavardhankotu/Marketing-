@@ -8,6 +8,8 @@ Scheduled jobs:
     4. Zero-cost hot database backup (daily 02:00 IST) using the native
        SQLite ``source_conn.backup(target_conn)`` API for transaction-safe
        online backups, deleting backups older than 7 days.
+    5. Video trash collector (daily 03:00 IST) — delete rendered .mp4/.png
+       under ``static/campaigns/`` older than 48 hours to keep disk usage flat.
 
 The scheduler uses a thread-local flag so it is only ever started once per
 process (the Flask reloader can otherwise double-start it).
@@ -16,6 +18,7 @@ process (the Flask reloader can otherwise double-start it).
 import os
 import sys
 import glob
+import time
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -152,6 +155,35 @@ def _prune_old_backups(days=7):
     print(f"[SCHEDULER] Pruned {removed} backup(s) older than {days} days.")
 
 
+def video_trash_collector(older_than_hours=48):
+    """
+    Frugal disk maintenance: delete rendered campaign media (.mp4/.png) under
+    ``static/campaigns/`` that is older than ``older_than_hours`` so the disk
+    never fills up with stale reels/posters.
+    """
+    from config import CAMPAIGN_STATIC_DIR
+
+    if not os.path.isdir(CAMPAIGN_STATIC_DIR):
+        print("[SCHEDULER] No campaign media directory yet — skipping trash collector.")
+        return 0
+
+    cutoff = time.time() - (older_than_hours * 3600)
+    removed = 0
+    for filename in os.listdir(CAMPAIGN_STATIC_DIR):
+        if not filename.lower().endswith((".mp4", ".png")):
+            continue
+        file_path = os.path.join(CAMPAIGN_STATIC_DIR, filename)
+        try:
+            if os.path.getmtime(file_path) < cutoff:
+                os.remove(file_path)
+                removed += 1
+        except OSError:
+            pass
+
+    print(f"[SCHEDULER] Trash collector removed {removed} media file(s) older than {older_than_hours}h.")
+    return removed
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SCHEDULER LIFECYCLE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +228,13 @@ def start(app=None):
         CronTrigger(hour=2, minute=0, timezone=SCHEDULER_TZ),
         id="hot_db_backup",
         name="Hot database backup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        video_trash_collector,
+        CronTrigger(hour=3, minute=0, timezone=SCHEDULER_TZ),
+        id="video_trash_collector",
+        name="Video trash collector (48h media cleanup)",
         replace_existing=True,
     )
 

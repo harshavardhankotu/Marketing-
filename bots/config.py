@@ -85,6 +85,12 @@ TWITTER_API_SECRET = os.getenv('TWITTER_API_SECRET', '')
 TWITTER_ACCESS_TOKEN = os.getenv('TWITTER_ACCESS_TOKEN', '')
 TWITTER_ACCESS_SECRET = os.getenv('TWITTER_ACCESS_SECRET', '')
 
+# Zero-cost X/Twitter posting via Playwright browser automation (used only when
+# the paid Twitter API credentials above are absent AND this flag is enabled).
+# A persistent browser profile under data/playwright/ must be logged in first.
+PLAYWRIGHT_X_ENABLED = os.getenv('PLAYWRIGHT_X_ENABLED', 'False').strip().lower() in ('1', 'true', 'yes')
+PLAYWRIGHT_HEADLESS = os.getenv('PLAYWRIGHT_HEADLESS', 'True').strip().lower() in ('1', 'true', 'yes')
+
 INSTAGRAM_ACCOUNT_ID = os.getenv('INSTAGRAM_ACCOUNT_ID', '')
 META_ACCESS_TOKEN = os.getenv('META_ACCESS_TOKEN', '')
 
