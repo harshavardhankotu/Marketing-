@@ -1,769 +1,373 @@
 """
-Content Distributor Bot
-─────────────────────────────────────────────────────
-Distributes marketing content to 4 social platforms:
-  • Twitter / X
-  • Instagram
-  • Telegram
-  • WhatsApp Business (India‑critical channel)
+Social distributor — organic broadcast to Telegram, X (Twitter) and
+Instagram Graph API.
 
-All distributors are mock implementations. In production, swap each
-with the real API (Twitter API v2, Instagram Graph API, Telegram Bot API,
-WhatsApp Business API via WABA / Gupshup / Twilio).
+Every channel adapter:
+    * checks the daily quota and circuit breaker first,
+    * records failures on the breaker, and
+    * never fabricates engagement — posting is purely organic.
+
+A distribution failure enqueues a retry through the dead-letter queue so an
+operator (or the scheduler) can recover it later.
 """
 
-import json
 import os
+import sys
 import time
+import json
 import hashlib
 import requests
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-INDIA_OFFSET_HOURS = 5.5
+from config import (
+    OUTPUT_DIR, CAMPAIGN_STATIC_DIR,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    TWITTER_API_KEY, TWITTER_API_SECRET,
+    TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET,
+    INSTAGRAM_ACCOUNT_ID, META_ACCESS_TOKEN,
+)  # noqa: E402
 
-def get_ist_now():
-    return datetime.utcnow() + timedelta(hours=INDIA_OFFSET_HOURS)
-
-
-def _mock_post_id():
-    """Generate a realistic-looking mock post ID."""
-    return hashlib.md5(str(time.time()).encode()).hexdigest()[:12]
-
-
-def _resolve_audience_language(channel, journey_name):
-    """
-    Returns the preferred language key ('en', 'hi', 'ta') based on channel and audience journey.
-    """
-    journey_lower = journey_name.lower()
-    
-    # 1. Check explicit journey targeting
-    if 'tamil' in journey_lower or 'chennai' in journey_lower:
-        return 'ta'
-    if 'hindi' in journey_lower or 'vernacular' in journey_lower or 'delhi' in journey_lower:
-        return 'hi'
-        
-    # 2. Check channel-specific defaults
-    if channel == 'telegram':
-        # Example rule: Our hypothetical main Telegram audience prefers Hindi
-        return 'hi'
-    if channel == 'whatsapp':
-        # Example rule: Our hypothetical WhatsApp broadcast list prefers Tamil
-        return 'ta'
-        
-    # Default to English
-    return 'en'
+from quota_manager import (
+    check_quota, consume_quota, check_breaker, record_breaker_failure,
+    record_breaker_success, QuotaExceededException, CircuitBreakerOpenException,
+)  # noqa: E402
+from job_queue import enqueue_job, fail_job, complete_job  # noqa: E402
+from alert_engine import notify_distribution_failure  # noqa: E402
 
 
-def mock_post_to_twitter(post_data):
-    """Mock posting a tweet (X)."""
-    caption = post_data.get('caption', '')
-    if len(caption) > 280:
-        caption = caption[:277] + "..."
-    safe = caption.encode('ascii', 'ignore').decode('ascii')
-    print(f"  [Twitter/X] Tweeted (Mock): {safe[:60]}...")
-    return {
-        "platform": "Twitter/X",
-        "status": "Success (Mock)",
-        "link": f"https://x.com/YourAgency/status/{_mock_post_id()}"
-    }
-
-def live_post_to_twitter(post_data):
-    """Real posting to Twitter/X via API v1.1 & v2 with fallback to mock."""
-    api_key = os.getenv("TWITTER_API_KEY")
-    api_secret = os.getenv("TWITTER_API_SECRET")
-    access_token = os.getenv("TWITTER_ACCESS_TOKEN")
-    access_secret = os.getenv("TWITTER_ACCESS_SECRET")
-    
-    if not all([api_key, api_secret, access_token, access_secret]) or "your_twitter_" in str(api_key):
-        return mock_post_to_twitter(post_data)
-        
-    # Import SRE resilience services
-    from bots.resilience import call_with_retry
-    from bots.circuit_breakers import get_breaker, CircuitBreakerOpenException
-    from bots.quota_manager import check_quota, consume_quota, QuotaExceededException
-
-    # 1. Quota Check
-    if check_quota("twitter") == "BLOCKED":
-        print("  [Twitter-LIVE] Daily quota blocked. Falling back to mock...")
-        return mock_post_to_twitter(post_data)
-
-    # 2. Circuit Breaker Check
-    breaker = get_breaker("twitter", failure_threshold=5, cooldown_sec=60)
-    try:
-        breaker.check()
-    except CircuitBreakerOpenException as e:
-        print(f"  [Twitter-LIVE] Circuit breaker is open: {e}. Falling back to mock...")
-        return mock_post_to_twitter(post_data)
-
-    try:
-        import tweepy
-        
-        # Twitter API v1.1 for media uploads
-        auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_secret)
-        api_v1 = tweepy.API(auth)
-        
-        # Twitter API v2 for creating tweets
-        client_v2 = tweepy.Client(
-            consumer_key=api_key,
-            consumer_secret=api_secret,
-            access_token=access_token,
-            access_token_secret=access_secret
-        )
-        
-        # Resolve visual creative image path
-        from config import OUTPUT_DIR
-        graphic_path = post_data.get('graphic_path', '')
-        image_file_path = None
-        media_id = None
-        
-        if graphic_path:
-            filename = os.path.basename(graphic_path)
-            candidate_path = os.path.join(OUTPUT_DIR, filename)
-            if os.path.exists(candidate_path):
-                image_file_path = candidate_path
-
-        def make_live_tweet():
-            consume_quota("twitter")
-            nonlocal media_id
-            if image_file_path:
-                media = api_v1.media_upload(filename=image_file_path)
-                media_id = media.media_id_string
-            
-            caption = post_data.get('caption', '')
-            if len(caption) > 280:
-                caption = caption[:277] + "..."
-                
-            if media_id:
-                response = client_v2.create_tweet(text=caption, media_ids=[media_id])
-            else:
-                response = client_v2.create_tweet(text=caption)
-            return response
-
-        # 3. Call with Retry & Timeout
-        res = call_with_retry(make_live_tweet, max_retries=3, base_delay=1.0, max_delay=5.0, provider="twitter")
-        
-        if res["success"]:
-            breaker.record_success()
-            tweet_id = res["result"].data.get("id", _mock_post_id())
-            return {
-                "platform": "Twitter/X",
-                "status": "Success (Live)",
-                "link": f"https://x.com/YourAgency/status/{tweet_id}"
-            }
-        else:
-            breaker.record_failure()
-            print(f"  [Twitter-LIVE] Execution failed: {res['error']}. Falling back to mock...")
-            return mock_post_to_twitter(post_data)
-            
-    except Exception as exc:
-        breaker.record_failure()
-        print(f"  [Twitter-LIVE] Exception during tweet init: {exc}. Falling back to mock...")
-        return mock_post_to_twitter(post_data)
+def _mock_id():
+    return hashlib.md5(f"{time.time()}".encode()).hexdigest()[:12]
 
 
-def mock_post_to_instagram(post_data):
-    """Mock posting to Instagram."""
-    caption = post_data.get('caption', '')
-    safe_cap = caption.encode('ascii', 'ignore').decode('ascii')
-    print(f"  [Instagram] Posted (Mock) {post_data.get('title', 'Unknown')} | {safe_cap[:30]}...")
-    return {
-        "platform": "Instagram",
-        "status": "Success (Mock)",
-        "link": f"https://instagram.com/p/{_mock_post_id()}"
-    }
-
-def live_post_to_instagram(post_data):
-    """Real posting to Instagram via Meta Graph API with fallback to mock."""
-    ig_user_id = os.getenv("INSTAGRAM_ACCOUNT_ID")
-    access_token = os.getenv("META_ACCESS_TOKEN")
-    
-    if not ig_user_id or not access_token or "your_instagram_" in str(ig_user_id):
-        return mock_post_to_instagram(post_data)
-        
-    # Import SRE resilience services
-    from bots.resilience import call_with_retry
-    from bots.circuit_breakers import get_breaker, CircuitBreakerOpenException
-    from bots.quota_manager import check_quota, consume_quota, QuotaExceededException
-
-    # 1. Quota Check
-    if check_quota("instagram") == "BLOCKED":
-        print("  [Instagram-LIVE] Daily quota blocked. Falling back to mock...")
-        return mock_post_to_instagram(post_data)
-
-    # 2. Circuit Breaker Check
-    breaker = get_breaker("instagram", failure_threshold=5, cooldown_sec=60)
-    try:
-        breaker.check()
-    except CircuitBreakerOpenException as e:
-        print(f"  [Instagram-LIVE] Circuit breaker is open: {e}. Falling back to mock...")
-        return mock_post_to_instagram(post_data)
-
-    try:
-        # Resolve creative image path
-        graphic_path = post_data.get('graphic_path', '')
-        if not graphic_path:
-            print("  [Instagram-LIVE] Graphic path is missing. Instagram requires media. Falling back to mock...")
-            return mock_post_to_instagram(post_data)
-            
-        filename = os.path.basename(graphic_path)
-        # Construct VPS hosted image URL
-        public_image_url = f"https://affiliate.yourdomain.com/static/campaigns/{filename}"
-        caption = post_data.get('caption', '')
-
-        def make_live_instagram_post():
-            consume_quota("instagram")
-            
-            # Step 1: Create Container
-            container_url = f"https://graph.facebook.com/v18.0/{ig_user_id}/media"
-            payload_step1 = {
-                "image_url": public_image_url,
-                "caption": caption,
-                "access_token": access_token
-            }
-            resp1 = requests.post(container_url, data=payload_step1, timeout=15)
-            resp1.raise_for_status()
-            creation_id = resp1.json().get("id")
-            
-            if not creation_id:
-                raise ValueError("Container creation failed: no ID returned.")
-                
-            # Step 2: Publish Container
-            publish_url = f"https://graph.facebook.com/v18.0/{ig_user_id}/media_publish"
-            payload_step2 = {
-                "creation_id": creation_id,
-                "access_token": access_token
-            }
-            resp2 = requests.post(publish_url, data=payload_step2, timeout=15)
-            resp2.raise_for_status()
-            return resp2.json()
-
-        # 3. Call with Retry & Timeout
-        res = call_with_retry(make_live_instagram_post, max_retries=3, base_delay=2.0, max_delay=8.0, provider="instagram")
-        
-        if res["success"]:
-            breaker.record_success()
-            post_id = res["result"].get("id", _mock_post_id())
-            return {
-                "platform": "Instagram",
-                "status": "Success (Live)",
-                "link": f"https://instagram.com/p/{post_id}"
-            }
-        else:
-            breaker.record_failure()
-            print(f"  [Instagram-LIVE] Execution failed: {res['error']}. Falling back to mock...")
-            return mock_post_to_instagram(post_data)
-            
-    except Exception as exc:
-        breaker.record_failure()
-        print(f"  [Instagram-LIVE] Exception during API post: {exc}. Falling back to mock...")
-        return mock_post_to_instagram(post_data)
+def _credential_ok(value):
+    return bool(value) and "your_" not in value
 
 
+def _safe_caption(caption, limit=None):
+    caption = caption or ""
+    if limit:
+        caption = caption[: limit - 3] + "..." if len(caption) > limit else caption
+    return caption
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TELEGRAM
+# ─────────────────────────────────────────────────────────────────────────────
 def mock_post_to_telegram(post_data):
-    """Mock posting to Telegram channel."""
-    caption = post_data.get('caption', '')
-    safe_cap = caption.encode('ascii', 'ignore').decode('ascii')
-    print(f"  [Telegram] Sent {post_data.get('title', 'Unknown')} | {safe_cap[:30]}...")
-    return {
-        "platform": "Telegram",
-        "status": "Success",
-        "link": f"https://t.me/YourDeals/{_mock_post_id()}"
-    }
+    print(f"  [Telegram] (MOCK) {post_data.get('title', 'Untitled')}")
+    return {"platform": "Telegram", "status": "Success (Mock)", "link": f"https://t.me/YourDeals/{_mock_id()}"}
+
 
 def live_post_to_telegram(post_data):
-    """Real posting to Telegram via Bot API with fallback to mock."""
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
-    if not bot_token or not chat_id or bot_token == "your_telegram_bot_token" or "your_telegram_bot_token" in bot_token:
+    """Send a photo (or text) to the configured Telegram channel."""
+    if not (_credential_ok(TELEGRAM_BOT_TOKEN) and TELEGRAM_CHAT_ID):
         return mock_post_to_telegram(post_data)
-        
-    # Import reliability services
-    from bots.resilience import call_with_retry, timeout_call
-    from bots.circuit_breakers import get_breaker, CircuitBreakerOpenException
-    from bots.quota_manager import check_quota, consume_quota, QuotaExceededException
 
-    # 1. Quota Check
     if check_quota("telegram") == "BLOCKED":
-        print("  [Telegram-LIVE] Daily quota blocked. Falling back to mock...")
+        print("  [Telegram] Quota blocked -> mock.")
         return mock_post_to_telegram(post_data)
-
-    # 2. Circuit Breaker Check
-    breaker = get_breaker("telegram", failure_threshold=5, cooldown_sec=60)
     try:
-        breaker.check()
-    except CircuitBreakerOpenException as e:
-        print(f"  [Telegram-LIVE] Circuit breaker is open. Details: {e}. Falling back to mock...")
+        check_breaker("telegram")
+    except CircuitBreakerOpenException:
+        print("  [Telegram] Circuit breaker OPEN -> mock.")
         return mock_post_to_telegram(post_data)
-        
-    caption = post_data.get('caption', '')
-    title = post_data.get('title', 'Unknown')
-    aff_link = post_data.get('affiliate_link', post_data.get('link', ''))
-    
-    # Ensure the affiliate link is present in the sent text
-    if aff_link and "http" not in caption:
-        text_to_send = f"{caption}\n\n🔗 Buy here: {aff_link}"
-    else:
-        text_to_send = f"{caption}\n\n🔗 {aff_link}" if aff_link else caption
-        
-    # Resolve the creative image path
-    from config import OUTPUT_DIR
-    graphic_path = post_data.get('graphic_path', '')
-    image_file_path = None
-    
-    if graphic_path:
-        # Extract filename (e.g. from "/image/graphic_0.jpg" or "graphic_0.jpg")
-        filename = os.path.basename(graphic_path)
-        candidate_path = os.path.join(OUTPUT_DIR, filename)
-        if os.path.exists(candidate_path):
-            image_file_path = candidate_path
-            
-    def make_live_post():
+
+    caption = post_data.get("caption", "")
+    link = post_data.get("affiliate_link") or post_data.get("target_url", "")
+    text = f"{caption}\n\n🔗 {link}" if link else caption
+    text = _safe_caption(text, 1024)
+
+    try:
         consume_quota("telegram")
-        # Try sending photo if creative image exists
-        if image_file_path:
-            try:
-                photo_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-                with open(image_file_path, 'rb') as photo_file:
-                    files = {'photo': photo_file}
-                    payload = {
-                        "chat_id": chat_id,
-                        "caption": text_to_send[:1024], # Telegram captions are limited to 1024 chars
-                    }
-                    resp = requests.post(photo_url, data=payload, files=files, timeout=15)
-                    resp.raise_for_status()
-                    return resp.json()
-            except Exception as photo_err:
-                print(f"  [Telegram-LIVE] sendPhoto failed: {photo_err}. Falling back to sendMessage...")
-                # If sendPhoto fails, continue to fallback below
-        
-        # Fallback to sendMessage (text only)
-        msg_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text_to_send,
-            "disable_web_page_preview": False
-        }
-        resp = requests.post(msg_url, json=payload, timeout=10)
+        image_file = _resolve_media(post_data.get("graphic_path"))
+        if image_file:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+            with open(image_file, "rb") as fh:
+                resp = requests.post(
+                    url,
+                    data={"chat_id": TELEGRAM_CHAT_ID, "caption": text},
+                    files={"photo": fh},
+                    timeout=15,
+                )
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            resp = requests.post(
+                url,
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+                timeout=15,
+            )
+        if resp.status_code >= 500:
+            record_breaker_failure("telegram")
+            raise RuntimeError(f"Telegram 5xx: {resp.status_code}")
         resp.raise_for_status()
-        return resp.json()
-
-    # 3. Call with Retry & Timeout
-    retry_res = call_with_retry(
-        make_live_post,
-        max_retries=3,
-        base_delay=1.0,
-        max_delay=5.0,
-        provider="telegram"
-    )
-
-    if retry_res["success"]:
-        breaker.record_success()
-        data = retry_res["result"]
-        msg_id = data.get("result", {}).get("message_id", _mock_post_id())
-        safe_cap = caption.encode('ascii', 'ignore').decode('ascii')
-        print(f"  [Telegram-LIVE] Sent {title} | {safe_cap[:30]}...")
-        
-        link = f"https://t.me/{str(chat_id).replace('@', '')}/{msg_id}" if str(chat_id).startswith('@') else "N/A (Private)"
-        return {
-            "platform": "Telegram",
-            "status": "Success (Live)",
-            "link": link
-        }
-    else:
-        breaker.record_failure()
-        print(f"  [Telegram-LIVE] Failed after retries: {retry_res['error']}. Falling back to mock...")
+        record_breaker_success("telegram")
+        msg = resp.json().get("result", {})
+        message_id = msg.get("message_id", _mock_id())
+        link = f"https://t.me/{TELEGRAM_CHAT_ID.lstrip('@')}/{message_id}"
+        return {"platform": "Telegram", "status": "Success (Live)", "link": link, "message_id": message_id}
+    except requests.RequestException as exc:
+        record_breaker_failure("telegram")
+        print(f"  [Telegram] Delivery failed: {exc}")
         return mock_post_to_telegram(post_data)
 
 
-def mock_post_to_whatsapp(post_data):
-    """Mock WhatsApp Business API distribution."""
-    title = post_data.get('title', 'Unknown')
-    price = post_data.get('price', 'N/A')
-    aff_link = post_data.get('affiliate_link', post_data.get('link', ''))
-    caption = post_data.get('caption', '')
-    template_msg = (
-        f"Deal Alert! {title} at Rs.{price}. "
-        f"{caption} "
-        f"Shop now: {aff_link} "
-        f"Reply STOP to opt-out."
-    )
-    safe_msg = template_msg.encode('ascii', 'ignore').decode('ascii')
-    print(f"  [WhatsApp] Broadcast (Mock): {safe_msg[:60]}...")
-    return {
-        "platform": "WhatsApp",
-        "status": "Success (Mock)",
-        "link": f"https://wa.me/919999999999?text={_mock_post_id()}",
-        "template_used": "daily_deal_alert",
-        "audience": "opted_in_subscribers"
+# ─────────────────────────────────────────────────────────────────────────────
+# X / TWITTER
+# ─────────────────────────────────────────────────────────────────────────────
+def mock_post_to_twitter(post_data):
+    print(f"  [Twitter/X] (MOCK) {post_data.get('title', 'Untitled')}")
+    return {"platform": "Twitter/X", "status": "Success (Mock)", "link": f"https://x.com/YourAgency/status/{_mock_id()}"}
+
+
+def live_post_to_twitter(post_data):
+    """Post a tweet (optionally with an image) via the Tweepy SDK."""
+    if not all(_credential_ok(v) for v in (TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET)):
+        return mock_post_to_twitter(post_data)
+
+    if check_quota("twitter") == "BLOCKED":
+        return mock_post_to_twitter(post_data)
+    try:
+        check_breaker("twitter")
+    except CircuitBreakerOpenException:
+        return mock_post_to_twitter(post_data)
+
+    caption = _safe_caption(post_data.get("caption", ""), 280)
+    try:
+        import tweepy
+
+        consume_quota("twitter")
+        client = tweepy.Client(
+            consumer_key=TWITTER_API_KEY,
+            consumer_secret=TWITTER_API_SECRET,
+            access_token=TWITTER_ACCESS_TOKEN,
+            access_token_secret=TWITTER_ACCESS_SECRET,
+        )
+        image_file = _resolve_media(post_data.get("graphic_path"))
+        media_id = None
+        if image_file:
+            api_v1 = tweepy.API(tweepy.OAuth1UserHandler(
+                TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET
+            ))
+            media_id = api_v1.media_upload(filename=image_file).media_id_string
+        if media_id:
+            response = client.create_tweet(text=caption, media_ids=[media_id])
+        else:
+            response = client.create_tweet(text=caption)
+        record_breaker_success("twitter")
+        tweet_id = response.data.get("id", _mock_id())
+        return {"platform": "Twitter/X", "status": "Success (Live)", "link": f"https://x.com/YourAgency/status/{tweet_id}"}
+    except Exception as exc:
+        record_breaker_failure("twitter")
+        print(f"  [Twitter/X] Posting failed: {exc}")
+        return mock_post_to_twitter(post_data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTAGRAM (Graph API)
+# ─────────────────────────────────────────────────────────────────────────────
+def mock_post_to_instagram(post_data):
+    print(f"  [Instagram] (MOCK) {post_data.get('title', 'Untitled')}")
+    return {"platform": "Instagram", "status": "Success (Mock)", "link": f"https://instagram.com/p/{_mock_id()}"}
+
+
+def live_post_to_instagram(post_data):
+    """Publish an image via the Instagram Graph API (container + publish)."""
+    if not (_credential_ok(INSTAGRAM_ACCOUNT_ID) and _credential_ok(META_ACCESS_TOKEN)):
+        return mock_post_to_instagram(post_data)
+
+    image_file = _resolve_media(post_data.get("graphic_path"))
+    if not image_file:
+        print("  [Instagram] No media found -> mock.")
+        return mock_post_to_instagram(post_data)
+
+    if check_quota("instagram") == "BLOCKED":
+        return mock_post_to_instagram(post_data)
+    try:
+        check_breaker("instagram")
+    except CircuitBreakerOpenException:
+        return mock_post_to_instagram(post_data)
+
+    caption = _safe_caption(post_data.get("caption", ""), 2200)
+    try:
+        consume_quota("instagram")
+        base = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}"
+        # Step 1 — create container with a publicly reachable image URL.
+        image_url = _public_image_url(image_file)
+        create_resp = requests.post(
+            f"{base}/media",
+            data={"image_url": image_url, "caption": caption, "access_token": META_ACCESS_TOKEN},
+            timeout=15,
+        )
+        if create_resp.status_code >= 500:
+            record_breaker_failure("instagram")
+            raise RuntimeError(f"Instagram 5xx: {create_resp.status_code}")
+        create_resp.raise_for_status()
+        creation_id = create_resp.json().get("id")
+        if not creation_id:
+            raise RuntimeError("Instagram container creation failed: no id.")
+
+        # Step 2 — publish the container.
+        publish_resp = requests.post(
+            f"{base}/media_publish",
+            data={"creation_id": creation_id, "access_token": META_ACCESS_TOKEN},
+            timeout=15,
+        )
+        publish_resp.raise_for_status()
+        record_breaker_success("instagram")
+        media_id = publish_resp.json().get("id", _mock_id())
+        return {"platform": "Instagram", "status": "Success (Live)", "link": f"https://instagram.com/p/{media_id}"}
+    except requests.RequestException as exc:
+        record_breaker_failure("instagram")
+        print(f"  [Instagram] Delivery failed: {exc}")
+        return mock_post_to_instagram(post_data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEDIA HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def _resolve_media(graphic_path):
+    """Resolve a graphic path to a real file on disk (or None)."""
+    if not graphic_path:
+        return None
+    candidate = os.path.basename(graphic_path)
+    for base in (OUTPUT_DIR, CAMPAIGN_STATIC_DIR):
+        full = os.path.join(base, candidate)
+        if os.path.exists(full):
+            return full
+    if os.path.exists(graphic_path):
+        return graphic_path
+    return None
+
+
+def _public_image_url(image_file):
+    """Return the best-effort public URL for an image (used by IG Graph API)."""
+    host = os.getenv("PUBLIC_BASE_URL", "https://affiliate.example.com")
+    return f"{host}/static/campaigns/{os.path.basename(image_file)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ORCHESTRATION
+# ─────────────────────────────────────────────────────────────────────────────
+CHANNEL_ADAPTERS = {
+    "telegram": live_post_to_telegram,
+    "twitter": live_post_to_twitter,
+    "instagram": live_post_to_instagram,
+}
+
+
+def distribute_campaign(campaign_id, channels=None):
+    """
+    Broadcast a campaign to the selected channels (default: all).
+
+    Distribution logs are written per channel. A failure in any channel is
+    routed through the dead-letter queue and the alert engine.
+
+    Returns ``True`` when at least one channel succeeded.
+    """
+    from db_manager import get_campaign, update_campaign_status
+
+    campaign = get_campaign(campaign_id)
+    if not campaign:
+        print(f"[DISTRIBUTOR] Campaign {campaign_id} not found.")
+        return False
+
+    channels = channels or list(CHANNEL_ADAPTERS)
+    post_data = {
+        "id": campaign.get("product_id") or campaign.get("id"),
+        "title": campaign.get("title", "Untitled"),
+        "caption": campaign.get("caption") or "",
+        "affiliate_link": campaign.get("target_url", ""),
+        "target_url": campaign.get("target_url", ""),
+        "graphic_path": campaign.get("graphic_path", ""),
+        "price": campaign.get("price", 0),
     }
 
-def live_post_to_whatsapp(post_data):
-    """Real WhatsApp Business API template broadcast with fallback to mock."""
-    phone_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
-    recipient = os.getenv("WHATSAPP_TEST_RECIPIENT", "919999999999")
-    
-    if not phone_id or not access_token or "your_whatsapp_" in str(phone_id):
-        return mock_post_to_whatsapp(post_data)
-        
-    # Import SRE resilience services
-    from bots.resilience import call_with_retry
-    from bots.circuit_breakers import get_breaker, CircuitBreakerOpenException
-    from bots.quota_manager import check_quota, consume_quota, QuotaExceededException
+    success_count = 0
+    for channel in channels:
+        adapter = CHANNEL_ADAPTERS.get(channel)
+        if not adapter:
+            continue
+        try:
+            print(f"[DISTRIBUTOR] Posting campaign {campaign_id} -> {channel}")
+            result = adapter(post_data)
+            _log_distribution(campaign_id, channel, result)
+            if result.get("status", "").lower().startswith("success"):
+                success_count += 1
+            else:
+                _enqueue_retry(campaign_id, channel, result.get("status", "unknown"))
+        except Exception as exc:
+            print(f"[DISTRIBUTOR] Channel {channel} raised: {exc}")
+            notify_distribution_failure(campaign_id, channel, str(exc))
+            _enqueue_retry(campaign_id, channel, str(exc))
 
-    # 1. Quota Check
-    if check_quota("whatsapp") == "BLOCKED":
-        print("  [WhatsApp-LIVE] Daily quota blocked. Falling back to mock...")
-        return mock_post_to_whatsapp(post_data)
+    if success_count:
+        update_campaign_status(campaign_id, "published")
+        return True
 
-    # 2. Circuit Breaker Check
-    breaker = get_breaker("whatsapp", failure_threshold=5, cooldown_sec=60)
-    try:
-        breaker.check()
-    except CircuitBreakerOpenException as e:
-        print(f"  [WhatsApp-LIVE] Circuit breaker is open: {e}. Falling back to mock...")
-        return mock_post_to_whatsapp(post_data)
+    # Everything failed — keep campaign pending for a retry sweep.
+    update_campaign_status(campaign_id, "pending_approval")
+    return False
 
-    try:
-        graphic_path = post_data.get('graphic_path', '')
-        if not graphic_path:
-            print("  [WhatsApp-LIVE] Graphic path is missing. WhatsApp template requires a header image. Falling back to mock...")
-            return mock_post_to_whatsapp(post_data)
-            
-        filename = os.path.basename(graphic_path)
-        public_image_url = f"https://affiliate.yourdomain.com/static/campaigns/{filename}"
-        
-        title = post_data.get('title', 'Unknown')
-        price = post_data.get('price', 'N/A')
-        aff_link = post_data.get('affiliate_link', post_data.get('link', ''))
 
-        def make_live_whatsapp_post():
-            consume_quota("whatsapp")
-            
-            url = f"https://graph.facebook.com/v18.0/{phone_id}/messages"
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": recipient,
-                "type": "template",
-                "template": {
-                    "name": "daily_deal_alert",
-                    "language": {
-                        "code": "en_US"
-                    },
-                    "components": [
-                        {
-                            "type": "header",
-                            "parameters": [
-                                {
-                                    "type": "image",
-                                    "image": {
-                                        "link": public_image_url
-                                    }
-                                }
-                            ]
-                        },
-                        {
-                            "type": "body",
-                            "parameters": [
-                                {
-                                    "type": "text",
-                                    "text": str(title)
-                                },
-                                {
-                                    "type": "text",
-                                    "text": f"Rs.{price}"
-                                },
-                                {
-                                    "type": "text",
-                                    "text": str(aff_link)
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-            
-            resp = requests.post(url, json=payload, headers=headers, timeout=15)
-            resp.raise_for_status()
-            return resp.json()
-
-        # 3. Call with Retry & Timeout
-        res = call_with_retry(make_live_whatsapp_post, max_retries=3, base_delay=1.0, max_delay=5.0, provider="whatsapp")
-        
-        if res["success"]:
-            breaker.record_success()
-            waba_msg_id = res["result"].get("messages", [{}])[0].get("id", _mock_post_id())
-            return {
-                "platform": "WhatsApp",
-                "status": "Success (Live)",
-                "link": f"https://wa.me/{recipient}?msg={waba_msg_id}",
-                "template_used": "daily_deal_alert",
-                "audience": "opted_in_subscribers"
-            }
-        else:
-            breaker.record_failure()
-            print(f"  [WhatsApp-LIVE] Execution failed: {res['error']}. Falling back to mock...")
-            return mock_post_to_whatsapp(post_data)
-            
-    except Exception as exc:
-        breaker.record_failure()
-        print(f"  [WhatsApp-LIVE] Exception during API post: {exc}. Falling back to mock...")
-        return mock_post_to_whatsapp(post_data)
-
-def allocate_tracking_voice_vector(campaign_id):
-    """
-    Allocates a unique trackable phone number or extension pin from a localized pool,
-    flags its status as 'allocated', and binds it to the campaign context.
-    Supports either integer database campaign_id or string 12-char product_id hash.
-    Uses robust transaction locking and a circular recycling fallback on pool exhaustion.
-    """
+def _log_distribution(campaign_id, channel, result):
     import sqlite3
     from config import DB_PATH
-    
-    # Establish campaign identity keys
-    is_hash = isinstance(campaign_id, str)
-    
+
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    
     try:
-        # 1. Idempotency Check: see if already allocated
-        if is_hash:
-            cursor.execute("SELECT tracking_number, extension_pin FROM cpa_phone_pool WHERE assigned_product_id = ?", (campaign_id,))
-        else:
-            cursor.execute("SELECT tracking_number, extension_pin FROM cpa_phone_pool WHERE assigned_campaign_id = ?", (campaign_id,))
-        row = cursor.fetchone()
-        if row:
-            conn.close()
-            return {"tracking_number": row[0], "extension_pin": row[1]}
-            
-        # 2. Start atomic transaction for allocation
-        conn.execute("BEGIN IMMEDIATE")
-        
-        # 3. Find an available slot
-        cursor.execute("SELECT id, tracking_number, extension_pin FROM cpa_phone_pool WHERE status = 'available' ORDER BY id ASC LIMIT 1")
-        slot = cursor.fetchone()
-        
-        if slot:
-            slot_id, number, pin = slot
-            # Allocate the slot
-            if is_hash:
-                cursor.execute("""
-                UPDATE cpa_phone_pool
-                SET status = 'allocated', assigned_product_id = ?, allocated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """, (campaign_id, slot_id))
-            else:
-                cursor.execute("""
-                UPDATE cpa_phone_pool
-                SET status = 'allocated', assigned_campaign_id = ?, allocated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """, (campaign_id, slot_id))
-            conn.commit()
-            return {"tracking_number": number, "extension_pin": pin}
-            
-        # 4. Circular Pool Recycling: if pool is fully exhausted, recycle the oldest allocation
-        cursor.execute("SELECT id, tracking_number, extension_pin FROM cpa_phone_pool ORDER BY allocated_at ASC LIMIT 1")
-        oldest_slot = cursor.fetchone()
-        if oldest_slot:
-            slot_id, number, pin = oldest_slot
-            if is_hash:
-                cursor.execute("""
-                UPDATE cpa_phone_pool
-                SET status = 'allocated', assigned_product_id = ?, assigned_campaign_id = NULL, allocated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """, (campaign_id, slot_id))
-            else:
-                cursor.execute("""
-                UPDATE cpa_phone_pool
-                SET status = 'allocated', assigned_campaign_id = ?, assigned_product_id = NULL, allocated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """, (campaign_id, slot_id))
-            conn.commit()
-            return {"tracking_number": number, "extension_pin": pin}
-            
-        # 5. Ultimate SRE Fallback: return default numbers
-        conn.rollback()
-        return {"tracking_number": "+18005550199", "extension_pin": "999"}
-        
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        print(f"[TELEPHONY_ALLOCATOR] Allocation exception: {e}. Returning fallback tracking vectors.")
-        return {"tracking_number": "+18005550199", "extension_pin": "999"}
+        conn.execute(
+            """
+            INSERT INTO distribution_logs (campaign_id, channel, status, message_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (campaign_id, channel, result.get("status", ""), result.get("message_id")),
+        )
+        conn.commit()
     finally:
         conn.close()
 
-def distribute_campaign(campaign_id):
+
+def _enqueue_retry(campaign_id, channel, error):
+    enqueue_job(
+        "retry_distribution",
+        {"campaign_id": campaign_id, "channel": channel, "error": str(error)[:500]},
+    )
+
+
+def process_retry_job(job_id, payload):
     """
-    Distributes a specific campaign from the database by its campaign_id.
-    Connects to the social platforms and records the output logs.
+    Execute a queued retry_distribution job.
     """
-    import sqlite3
-    from config import DB_PATH
-    
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    # 1. Fetch campaign from DB
-    c.execute("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
-    campaign = c.fetchone()
-    if not campaign:
-        conn.close()
-        print(f"[DISTRIBUTOR] Campaign {campaign_id} not found.")
-        return False
-        
-    print(f"[DISTRIBUTOR] Distributing campaign {campaign_id}: {campaign['title']}")
-    
-    # Allowed channels
-    allowed_channels = ["twitter", "instagram", "telegram", "whatsapp"]
-    
-    # Prepare post data clone
-    post_data = {
-        "id": campaign["product_id"],
-        "title": campaign["title"],
-        "price": campaign["price"],
-        "platform": campaign["platform"],
-        "caption": campaign["caption"],
-        "graphic_path": campaign["graphic_path"],
-        "affiliate_link": campaign["affiliate_link"]
-    }
-    
-    channel_map = {
-        "twitter": live_post_to_twitter,
-        "instagram": live_post_to_instagram,
-        "telegram": live_post_to_telegram,
-        "whatsapp": live_post_to_whatsapp
-    }
-    
-    results = []
-    for ch in allowed_channels:
-        func = channel_map.get(ch)
-        if not func: 
-            continue
-            
-        try:
-            print(f"  Posting to {ch}...")
-            res = func(post_data)
-            results.append(res)
-        except Exception as e:
-            print(f"  Failed posting to {ch}: {e}")
-            results.append({
-                "platform": ch.capitalize(),
-                "status": f"Failed: {str(e)}",
-                "link": "N/A"
-            })
-            
-    # 2. Insert distribution logs for SRE visibility
-    for res in results:
-        # Resolve platform name cleanly
-        p_name = res["platform"].lower()
-        if "twitter" in p_name: p_name = "twitter"
-        elif "instagram" in p_name: p_name = "instagram"
-        elif "telegram" in p_name: p_name = "telegram"
-        elif "whatsapp" in p_name: p_name = "whatsapp"
-        
-        c.execute('''
-        INSERT INTO distribution_logs (campaign_id, platform, status, link, message_id)
-        VALUES (?, ?, ?, ?, ?)
-        ''', (
-            campaign_id,
-            res["platform"],
-            res["status"],
-            res["link"],
-            res.get("message_id")
-        ))
-        
-    # 3. Update campaign status to 'published'
-    c.execute("UPDATE campaigns SET status = 'published' WHERE id = ?", (campaign_id,))
-    
-    conn.commit()
-    conn.close()
-    print(f"[DISTRIBUTOR] Campaign {campaign_id} successfully distributed and updated to 'published'.")
-    return True
-
-
-if __name__ == "__main__":
-    print("Starting Distributor Bot (Delayed Dispatch Mode)...")
-    print("=" * 60)
-
-    from config import OUTPUT_DIR
-    post_data_path = os.path.join(OUTPUT_DIR, 'post_data.json')
-    journey_path = os.path.join(OUTPUT_DIR, 'journey_plans.json')
-    send_plan_path = os.path.join(OUTPUT_DIR, 'send_plan.json')
-    dist_log_path = os.path.join(OUTPUT_DIR, 'distribution_log.json')
-
-    if os.path.exists(post_data_path):
-        with open(post_data_path, 'r', encoding='utf-8') as f:
-            posts = json.load(f)
-        
-        # Load journeys if available
-        journeys = []
-        if os.path.exists(journey_path):
-            with open(journey_path, 'r', encoding='utf-8') as f:
-                journeys = json.load(f)
-
-        # Load send plans if available
-        send_plans = []
-        if os.path.exists(send_plan_path):
-            with open(send_plan_path, 'r', encoding='utf-8') as f:
-                send_plans = json.load(f)
-
-        ist_now = get_ist_now()
-        print(f"Current IST: {ist_now.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        if posts:
-            distribution_results = []
-            for idx, post in enumerate(posts):
-                # Identify journey and timing for this product
-                current_journey = journeys[idx] if idx < len(journeys) else None
-                current_timing = send_plans[idx] if idx < len(send_plans) else None
-                
-                strategy = current_journey.get("strategy", {}) if current_journey else {}
-                allowed_channels = strategy.get("channels", ["twitter", "instagram", "telegram", "whatsapp"])
-                journey_name = current_journey.get("journey_name", "Standard")
-
-                print(f"\n[{idx+1}/{len(posts)}] Journey: {journey_name} | Target: {post.get('title', 'Unknown')}")
-
-                results = []
-                for ch in allowed_channels:
-                    target_lang = _resolve_audience_language(ch, journey_name)
-                    
-                    # Delayed dispatch logic: mark as Scheduled for review queue
-                    res = {
-                        "platform": ch.capitalize(),
-                        "status": "Scheduled",
-                        "link": "N/A",
-                        "scheduled_for": (current_timing.get("channels", {}).get(ch, {}).get("window_start") if current_timing else ist_now.isoformat()),
-                        "window_label": (current_timing.get("channels", {}).get(ch, {}).get("label") if current_timing else "Standard"),
-                        "_target_lang": target_lang
-                    }
-                    print(f"  [{ch.capitalize()}] Scheduled for SRE Preview Gate [Lang: {target_lang}]")
-                    results.append(res)
-
-                distribution_results.append({
-                    "product_id": post.get("id", f"prod_{idx}"),
-                    "title": post.get("title", "Unknown"),
-                    "journey": journey_name,
-                    "platforms": results
-                })
-
-            with open(dist_log_path, 'w', encoding='utf-8') as f:
-                json.dump(distribution_results, f, indent=4)
-            print(f"\nAll {len(distribution_results)} posts scheduled for review. SRE Preview Gate holds execution.")
+    campaign_id = payload.get("campaign_id")
+    channel = payload.get("channel", "telegram")
+    try:
+        adapter = CHANNEL_ADAPTERS.get(channel)
+        if not adapter:
+            raise ValueError(f"Unknown channel: {channel}")
+        post_data = _load_post_data(campaign_id)
+        result = adapter(post_data)
+        if result.get("status", "").lower().startswith("success"):
+            _log_distribution(campaign_id, channel, result)
+            complete_job(job_id)
         else:
-            print("No posts found in queue.")
-    else:
-        print(f"Post data not found at {post_data_path}")
+            fail_job(job_id, f"Adapter returned: {result.get('status')}")
+    except Exception as exc:
+        fail_job(job_id, str(exc))
+
+
+def _load_post_data(campaign_id):
+    from db_manager import get_campaign
+
+    campaign = get_campaign(campaign_id) or {}
+    return {
+        "id": campaign.get("product_id") or campaign.get("id"),
+        "title": campaign.get("title", "Untitled"),
+        "caption": campaign.get("caption") or "",
+        "affiliate_link": campaign.get("target_url", ""),
+        "target_url": campaign.get("target_url", ""),
+        "graphic_path": campaign.get("graphic_path", ""),
+        "price": campaign.get("price", 0),
+    }

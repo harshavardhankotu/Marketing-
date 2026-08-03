@@ -1,13 +1,12 @@
-# CPA Lead Arbitrage reverse proxy configuration
-# Replace 'yourdomain.com' with your actual VPS domain name, or use ':80' for plain HTTP testing.
+# Autonomous Affiliate Marketing Suite — Caddy reverse proxy
+# Replace 'yourdomain.com' with your actual VPS domain, or use ':80' for plain HTTP testing.
 yourdomain.com {
-    # Reverse proxy public traffic to the internal Gunicorn socket
-    reverse_proxy 127.0.0.1:5000 {
-        # Caddy automatically passes X-Forwarded-For, X-Forwarded-Proto,
-        # and X-Forwarded-Host to preserve client IP metadata for Flask-Limiter.
-    }
+    # Reverse proxy public traffic to the internal Gunicorn socket.
+    # Caddy automatically forwards X-Forwarded-For / X-Real-IP so Flask-Limiter
+    # sees real client IPs.
+    reverse_proxy 127.0.0.1:5000
 
-    # Custom logging configuration
+    # Request logging with rotation.
     log {
         output file /var/log/caddy/affiliate_access.log {
             roll_size 10mb
@@ -15,20 +14,15 @@ yourdomain.com {
         }
     }
 
-    # Strict security headers to audit-harden the server
+    # Security headers.
     header {
-        # Clickjacking defense
         X-Frame-Options "SAMEORIGIN"
-        # MIME-type sniffing prevention
         X-Content-Type-Options "nosniff"
-        # Legacy XSS protection
         X-XSS-Protection "1; mode=block"
-        # Referral control
         Referrer-Policy "strict-origin-when-cross-origin"
-        # Strict Transport Security (HSTS) - force SSL for 1 year
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     }
 
-    # Enable modern dynamic response compression (gzip & zstd)
+    # Compression.
     encode gzip zstd
 }

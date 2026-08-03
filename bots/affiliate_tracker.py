@@ -1,263 +1,223 @@
 """
-Affiliate Click & Conversion Tracker
-─────────────────────────────────────────────────────
-Replicates:
-  • AppsFlyer / Adjust  — click attribution
-  • impact.com           — postback conversion tracking
-  • Amazon Associates    — click-through reporting
+Affiliate click & conversion tracker.
 
-Tracks every affiliate link click through a local redirect,
-logs the event to SQLite, and supports mock conversion states.
+Responsible for:
+    * extracting tracking parameters from click URLs,
+    * filtering bot traffic (``is_bot = 0`` for human analytics),
+    * recording conversions idempotently, and
+    * updating variant performance used by the A/B bandit.
 
-Tables created:
-  • affiliate_clicks   — one row per click event
-  • affiliate_conversions — one row per conversion (mock or real)
-
-States: clicked → pending_conversion → converted | expired
+All writes use explicit ``BEGIN IMMEDIATE`` locks and every connection is
+closed in a ``finally`` block.
 """
 
-import sqlite3
 import os
-import json
-from datetime import datetime
-from config import DB_PATH
+import re
+import sys
+import sqlite3
+from urllib.parse import urlparse, parse_qs
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from config import DB_PATH  # noqa: E402
+
+# Extended bot fingerprint list — kept conservative to avoid false positives.
+BOT_USER_AGENT_PATTERNS = [
+    "bot", "crawl", "spider", "slurp", "mediapartners", "monitor",
+    "facebookexternalhit", "linkedinbot", "twitterbot", "slackbot",
+    "discordbot", "whatsapp", "telegrambot", "baiduspider", "bingbot",
+    "yandexbot", "duckduckbot", "googlebot", "headlesschrome", "phantomjs",
+    "curl", "wget", "python-requests", "go-http-client", "okhttp", "java/",
+    "feedfetcher", "rogerbot", "pinterest", "snapchat", "embed.ly",
+]
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# SCHEMA
-# ═══════════════════════════════════════════════════════════════════════
+def _conn():
+    return sqlite3.connect(DB_PATH, timeout=30.0)
 
-def setup_tracking_tables():
-    """Create click and conversion tables if they don't exist."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    c = conn.cursor()
-
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS affiliate_clicks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id TEXT NOT NULL,
-        product_title TEXT,
-        sector TEXT,
-        channel TEXT,
-        affiliate_link TEXT,
-        user_agent TEXT,
-        referrer TEXT,
-        session_id TEXT,
-        clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        revenue_score REAL DEFAULT 0,
-        est_commission_pct REAL DEFAULT 0,
-        is_bot INTEGER DEFAULT 0,
-        variant TEXT
-    )
-    ''')
-
-    # Safe migration for affiliate_clicks 'variant' column if it doesn't exist
-    c.execute("PRAGMA table_info(affiliate_clicks)")
-    columns = [row[1] for row in c.fetchall()]
-    if 'variant' not in columns:
-        c.execute("ALTER TABLE affiliate_clicks ADD COLUMN variant TEXT")
-
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS affiliate_conversions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        click_id INTEGER,
-        product_id TEXT NOT NULL,
-        status TEXT DEFAULT 'pending_conversion',
-        sale_amount REAL DEFAULT 0,
-        commission_amount REAL DEFAULT 0,
-        converted_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (click_id) REFERENCES affiliate_clicks (id)
-    )
-    ''')
-
-    conn.commit()
-    conn.close()
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# CLICK TRACKING
-# ═══════════════════════════════════════════════════════════════════════
 
 def is_bot_ua(user_agent):
+    """Heuristic bot detection on a raw User-Agent string."""
     if not user_agent:
+        # Absent UA on a tracking endpoint is suspicious but not conclusive.
         return False
-    ua_lower = user_agent.lower()
-    bot_keywords = ["telegrambot", "facebookexternalhit", "twitterbot", "googlebot", "bingbot", "slackbot"]
-    return any(kw in ua_lower for kw in bot_keywords)
-
-def record_click(product_id, product_title="", sector="", channel="",
-                 affiliate_link="", user_agent="", referrer="",
-                 session_id="", revenue_score=0, est_commission_pct=0, variant=""):
-    """Record a single affiliate click event. Returns click_id."""
-    setup_tracking_tables()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    c = conn.cursor()
-
-    # 60 seconds deduplication check
-    if session_id and product_id:
-        c.execute('''
-        SELECT id FROM affiliate_clicks
-        WHERE session_id = ? AND product_id = ?
-        AND clicked_at >= datetime('now', '-60 seconds')
-        LIMIT 1
-        ''', (session_id, product_id))
-        dup = c.fetchone()
-        if dup:
-            conn.close()
-            return dup[0]
-
-    is_bot = 1 if is_bot_ua(user_agent) else 0
-
-    c.execute('''
-    INSERT INTO affiliate_clicks
-        (product_id, product_title, sector, channel, affiliate_link,
-         user_agent, referrer, session_id, revenue_score, est_commission_pct, is_bot, variant)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (product_id, product_title, sector, channel, affiliate_link,
-          user_agent, referrer, session_id, revenue_score, est_commission_pct, is_bot, variant))
-
-    click_id = c.lastrowid
-
-    # Auto-create a pending conversion record (mock attribution pipeline)
-    c.execute('''
-    INSERT INTO affiliate_conversions (click_id, product_id, status)
-    VALUES (?, ?, 'pending_conversion')
-    ''', (click_id, product_id))
-
-    conn.commit()
-    conn.close()
-    return click_id
+    ua = user_agent.lower()
+    return any(pattern in ua for pattern in BOT_USER_AGENT_PATTERNS)
 
 
+def extract_tracking_params(url):
+    """
+    Pull known tracking parameters out of an affiliate URL.
 
-# ═══════════════════════════════════════════════════════════════════════
-# CONVERSION TRACKING (mock-ready)
-# ═══════════════════════════════════════════════════════════════════════
-
-def record_conversion(click_id, sale_amount=0, commission_amount=0):
-    """Mark a pending conversion as converted. Called by postback or mock."""
-    setup_tracking_tables()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    c = conn.cursor()
-
-    c.execute('''
-    UPDATE affiliate_conversions
-    SET status = 'converted',
-        sale_amount = ?,
-        commission_amount = ?,
-        converted_at = ?
-    WHERE click_id = ?
-    ''', (sale_amount, commission_amount, datetime.utcnow().isoformat(), click_id))
-
-    conn.commit()
-    conn.close()
-
-
-def expire_old_conversions(hours=72):
-    """Mark pending conversions older than N hours as expired."""
-    setup_tracking_tables()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    c = conn.cursor()
-
-    c.execute('''
-    UPDATE affiliate_conversions
-    SET status = 'expired'
-    WHERE status = 'pending_conversion'
-    AND created_at < datetime('now', ?)
-    ''', (f'-{hours} hours',))
-
-    affected = c.rowcount
-    conn.commit()
-    conn.close()
-    return affected
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# ANALYTICS QUERIES
-# ═══════════════════════════════════════════════════════════════════════
-
-def get_click_stats(limit=50):
-    """Return click analytics for dashboard."""
-    setup_tracking_tables()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    # Top clicked products
-    c.execute('''
-    SELECT product_id, product_title, sector, COUNT(*) as clicks,
-           AVG(revenue_score) as avg_score, AVG(est_commission_pct) as avg_commission
-    FROM affiliate_clicks
-    WHERE is_bot = 0
-    GROUP BY product_id
-    ORDER BY clicks DESC
-    LIMIT ?
-    ''', (limit,))
-    top_products = [dict(r) for r in c.fetchall()]
-
-    # Clicks by channel
-    c.execute('''
-    SELECT channel, COUNT(*) as clicks
-    FROM affiliate_clicks
-    WHERE is_bot = 0
-    GROUP BY channel
-    ORDER BY clicks DESC
-    ''')
-    by_channel = [dict(r) for r in c.fetchall()]
-
-    # Clicks by sector
-    c.execute('''
-    SELECT sector, COUNT(*) as clicks
-    FROM affiliate_clicks
-    WHERE is_bot = 0
-    GROUP BY sector
-    ORDER BY clicks DESC
-    ''')
-    by_sector = [dict(r) for r in c.fetchall()]
-
-    # Conversion summary
-    c.execute('''
-    SELECT status, COUNT(*) as count,
-           SUM(sale_amount) as total_sales,
-           SUM(commission_amount) as total_commission
-    FROM affiliate_conversions
-    GROUP BY status
-    ''')
-    conversions = [dict(r) for r in c.fetchall()]
-
-    # Total stats
-    c.execute('SELECT COUNT(*) as total_clicks FROM affiliate_clicks WHERE is_bot = 0')
-    total_clicks = c.fetchone()['total_clicks']
-
-    c.execute('''
-    SELECT COUNT(*) as converted, SUM(commission_amount) as total_commission
-    FROM affiliate_conversions WHERE status = 'converted'
-    ''')
-    conv_row = dict(c.fetchone())
-
-    conn.close()
-
+    Returns a dict with ``variant`` and any whitelisted keys.
+    """
+    if not url:
+        return {"variant": ""}
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    variant = (query.get("var") or query.get("variant") or [""])[0]
+    if variant not in ("A", "B"):
+        variant = ""
     return {
-        "total_clicks": total_clicks,
-        "total_converted": conv_row.get("converted", 0) or 0,
-        "total_commission": round(conv_row.get("total_commission", 0) or 0, 2),
-        "top_products": top_products,
-        "by_channel": by_channel,
-        "by_sector": by_sector,
-        "conversions": conversions,
+        "variant": variant,
+        "tag": (query.get("tag") or [""])[0],
+        "channel": (query.get("channel") or [""])[0],
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# RUNNER (setup + test)
-# ═══════════════════════════════════════════════════════════════════════
+def record_click(product_id, channel="direct", user_agent="", ip_address="", variant="", session_id=""):
+    """
+    Record a single click event. Returns the click id.
 
-if __name__ == "__main__":
-    setup_tracking_tables()
-    print("Affiliate tracking tables ready.")
-    stats = get_click_stats()
-    print(f"Current stats: {stats['total_clicks']} clicks, "
-          f"{stats['total_converted']} conversions, "
-          f"₹{stats['total_commission']} commission")
+    If the same product is clicked from the same IP within 30 seconds the call
+    is treated as a duplicate and the previous click id is returned.
+    """
+    if variant not in ("A", "B"):
+        variant = ""
+    if not session_id:
+        session_id = ip_address or ""
+
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.cursor()
+
+        # De-duplicate rapid refreshes.
+        if ip_address and product_id:
+            cursor.execute(
+                """
+                SELECT id FROM affiliate_clicks
+                WHERE product_id = ? AND ip_address = ?
+                  AND timestamp >= datetime('now', '-30 seconds')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (product_id, ip_address),
+            )
+            dup = cursor.fetchone()
+            if dup:
+                conn.rollback()
+                return dup[0]
+
+        is_bot = 1 if is_bot_ua(user_agent) else 0
+        cursor.execute(
+            """
+            INSERT INTO affiliate_clicks (product_id, channel, session_id, user_agent, ip_address, is_bot, variant)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (product_id, channel, session_id, user_agent, ip_address, is_bot, variant),
+        )
+        click_id = cursor.lastrowid
+        conn.commit()
+        return click_id
+    except sqlite3.Error as exc:
+        conn.rollback()
+        print(f"[AFFILIATE_TRACKER] record_click failed: {exc}")
+        raise
+    finally:
+        conn.close()
+
+
+def record_conversion(transaction_id, product_id, session_id="", sale_amount=0.0,
+                      commission_amount=0.0):
+    """
+    Record a verified conversion.
+
+    The caller is responsible for HMAC validation and idempotency guards
+    (see ``idempotency.py``); this function only persists the row.
+    """
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """
+            INSERT INTO affiliate_conversions
+                (transaction_id, product_id, session_id, sale_amount, commission_amount, status)
+            VALUES (?, ?, ?, ?, ?, 'converted')
+            """,
+            (transaction_id, product_id, session_id, float(sale_amount), float(commission_amount)),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        # Duplicate transaction_id already stored.
+        return False
+    except sqlite3.Error as exc:
+        conn.rollback()
+        print(f"[AFFILIATE_TRACKER] record_conversion failed: {exc}")
+        raise
+    finally:
+        conn.close()
+
+
+def get_variant_performance(product_id=None):
+    """Return per-variant click/conversion stats (feeds the bandit UI)."""
+    conn = _conn()
+    try:
+        conn.row_factory = sqlite3.Row
+        if product_id:
+            rows = conn.execute(
+                "SELECT product_id, variant, COUNT(*) AS clicks "
+                "FROM affiliate_clicks WHERE is_bot = 0 AND variant IN ('A','B') AND product_id = ? "
+                "GROUP BY variant",
+                (product_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT product_id, variant, COUNT(*) AS clicks "
+                "FROM affiliate_clicks WHERE is_bot = 0 AND variant IN ('A','B') "
+                "GROUP BY product_id, variant"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_click_stats(limit=50):
+    """Dashboard analytics over human clicks and conversions."""
+    conn = _conn()
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) AS total FROM affiliate_clicks WHERE is_bot = 0")
+        total_clicks = cursor.fetchone()["total"]
+
+        cursor.execute(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(commission_amount), 0) AS commission "
+            "FROM affiliate_conversions WHERE status = 'converted'"
+        )
+        conv = cursor.fetchone()
+
+        cursor.execute(
+            """
+            SELECT product_id, channel, COUNT(*) AS clicks
+            FROM affiliate_clicks WHERE is_bot = 0
+            GROUP BY product_id, channel ORDER BY clicks DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        top = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(
+            "SELECT channel, COUNT(*) AS clicks FROM affiliate_clicks WHERE is_bot = 0 GROUP BY channel"
+        )
+        by_channel = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(
+            "SELECT sector, COUNT(*) AS clicks FROM affiliate_clicks c JOIN campaigns g ON c.product_id = g.product_id "
+            "WHERE c.is_bot = 0 GROUP BY sector"
+        )
+        by_sector = [dict(r) for r in cursor.fetchall()]
+
+        return {
+            "total_clicks": total_clicks,
+            "total_converted": conv["total"] if conv else 0,
+            "total_commission": round(conv["commission"] if conv else 0, 2),
+            "top_products": top,
+            "by_channel": by_channel,
+            "by_sector": by_sector,
+        }
+    finally:
+        conn.close()

@@ -1,309 +1,51 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Operator Settings - Admin Control</title>
-    <meta name="description" content="Secure administrative configuration panel for Automated AI Marketing Suite.">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0f0f11;
-            --surface: #1a1a1f;
-            --surface-2: #23232a;
-            --surface-3: #2c2c35;
-            --text-1: #f1f1f4;
-            --text-2: #9d9da6;
-            --text-3: #6b6b76;
-            --border: #2e2e38;
-            --accent: #475569;
-            --accent-soft: rgba(71,85,105,0.12);
-            --green: #22c55e;
-            --green-soft: rgba(34,197,94,0.12);
-            --red: #ef4444;
-            --red-soft: rgba(239,68,68,0.12);
-            --radius: 14px;
-            --shadow: 0 8px 32px rgba(0,0,0,0.4);
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg);
-            color: var(--text-1);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 40px 20px;
-            -webkit-font-smoothing: antialiased;
-        }
-        .container {
-            width: 100%;
-            max-width: 700px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            box-shadow: var(--shadow);
-            padding: 40px;
-            backdrop-filter: blur(10px);
-            background: linear-gradient(135deg, rgba(26,26,31,0.9) 0%, rgba(15,15,17,0.95) 100%);
-        }
-        .header {
-            margin-bottom: 30px;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .header h1 {
-            font-size: 1.8rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            background: linear-gradient(135deg, #f1f1f4 30%, #475569 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        .nav-links {
-            display: flex;
-            gap: 15px;
-        }
-        .nav-link {
-            color: var(--text-2);
-            text-decoration: none;
-            font-size: 0.85rem;
-            font-weight: 600;
-            transition: color 0.2s;
-        }
-        .nav-link:hover {
-            color: var(--text-1);
-        }
-        .form-section {
-            margin-bottom: 28px;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 20px;
-        }
-        .section-title {
-            font-size: 1rem;
-            font-weight: 700;
-            color: var(--text-1);
-            margin-bottom: 16px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .form-group {
-            text-align: left;
-            margin-bottom: 20px;
-        }
-        .form-group label {
-            display: block;
-            font-size: 0.8rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-2);
-            margin-bottom: 10px;
-        }
-        .form-group input, .form-group textarea, .form-group select {
-            width: 100%;
-            padding: 12px 16px;
-            border-radius: 10px;
-            border: 1px solid var(--border);
-            background: var(--surface-2);
-            color: var(--text-1);
-            font-family: inherit;
-            font-size: 0.95rem;
-            outline: none;
-            transition: all 0.2s;
-        }
-        .form-group textarea {
-            height: 140px;
-            resize: vertical;
-            font-family: monospace;
-            font-size: 0.85rem;
-            line-height: 1.5;
-        }
-        .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px var(--accent-soft);
-        }
-        .btn {
-            width: 100%;
-            background: var(--accent);
-            color: #fff;
-            border: none;
-            padding: 14px 24px;
-            font-size: 0.95rem;
-            font-weight: 600;
-            border-radius: 10px;
-            cursor: pointer;
-            font-family: inherit;
-            transition: all 0.2s;
-        }
-        .btn:hover {
-            background: #334155;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 16px rgba(71,85,105,0.3);
-        }
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            margin-bottom: 24px;
-            text-align: left;
-        }
-        .alert.success {
-            background: var(--green-soft);
-            color: var(--green);
-            border: 1px solid rgba(34,197,94,0.2);
-        }
-        .alert.error {
-            background: var(--red-soft);
-            color: var(--red);
-            border: 1px solid rgba(239,68,68,0.2);
-        }
-        .help-text {
-            display: block;
-            font-size: 0.78rem;
-            color: var(--text-3);
-            margin-top: 8px;
-            line-height: 1.4;
-        }
-        /* Sector Checkboxes Grid */
-        .sectors-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 12px;
-            margin-top: 10px;
-        }
-        .sector-checkbox-card {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            background: var(--surface-2);
-            border: 1px solid var(--border);
-            padding: 12px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .sector-checkbox-card:hover {
-            border-color: var(--accent);
-            background: var(--surface-3);
-        }
-        .sector-checkbox-card input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-            accent-color: var(--accent);
-        }
-        .sector-label {
-            font-size: 0.85rem;
-            font-weight: 500;
-            color: var(--text-1);
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Settings</h1>
-            <div class="nav-links">
-                <a href="/" class="nav-link">Dashboard</a>
-                <a href="/history" class="nav-link">History</a>
-                <a href="/logout" class="nav-link">Log Out</a>
-            </div>
-        </div>
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block nav_settings %}active{% endblock %}
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            {% for category, message in messages %}
-              <div class="alert {{ category if category in ('success', 'error') else 'success' }}">
-                {{ message }}
-              </div>
-            {% endfor %}
-          {% endif %}
-        {% endwith %}
+{% block content %}
+<div class="grid grid-2">
+  <div class="panel">
+    <h2>Distribution & Attribution</h2>
+    <form method="post" action="/settings">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-        <form method="POST" action="/settings">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            
-            <!-- Affiliate Sourcing IDs -->
-            <div class="form-section">
-                <div class="section-title">🔗 Affiliate Network Tags</div>
-                <div class="form-group">
-                    <label for="amazon_tag">Amazon Associate Tag</label>
-                    <input type="text" id="amazon_tag" name="amazon_tag" value="{{ amazon_tag }}" required>
-                    <span class="help-text">Your store ID for appending to Amazon India links (e.g. <code>marketingai-21</code>).</span>
-                </div>
-                <div class="form-group">
-                    <label for="flipkart_tag">Flipkart Affiliate ID</label>
-                    <input type="text" id="flipkart_tag" name="flipkart_tag" value="{{ flipkart_tag }}" required>
-                    <span class="help-text">Your store ID for appending to Flipkart links (e.g. <code>marketingai</code>).</span>
-                </div>
-            </div>
+      <div class="field">
+        <label for="primary_routing_domain">Primary Routing Domain</label>
+        <input id="primary_routing_domain" name="primary_routing_domain"
+               value="{{ settings.primary_routing_domain }}" placeholder="https://www.amazon.in">
+      </div>
 
-            <!-- Preview Gate Settings -->
-            <div class="form-section">
-                <div class="section-title">⏳ Campaign Preview Gate</div>
-                <div class="form-group">
-                    <label for="auto_publish_timeout">Auto-Publish Timeout (Minutes)</label>
-                    <input type="number" id="auto_publish_timeout" name="auto_publish_timeout" value="{{ auto_publish_timeout }}" min="1" max="1440" required>
-                    <span class="help-text">Number of minutes to hold newly generated campaigns in the preview queue for review before auto-publishing.</span>
-                </div>
-            </div>
+      <div class="field">
+        <label for="auto_publish_timeout">Auto-Publish Timeout (minutes)</label>
+        <input id="auto_publish_timeout" name="auto_publish_timeout"
+               value="{{ settings.auto_publish_timeout }}">
+      </div>
 
-            <!-- CPA Network settings -->
-            <div class="form-section">
-                <div class="section-title">🏢 CPA Arbitrage & Domain Routing</div>
-                <div class="form-group">
-                    <label for="cpa_network_id">CPA Network ID</label>
-                    <input type="text" id="cpa_network_id" name="cpa_network_id" value="{{ cpa_network_id }}" required>
-                    <span class="help-text">Your unique network provider identifier (e.g. <code>cpa_lead_net_9876</code>). Required.</span>
-                </div>
-                <div class="form-group">
-                    <label for="primary_routing_domain">Primary Routing Domain</label>
-                    <input type="url" id="primary_routing_domain" name="primary_routing_domain" value="{{ primary_routing_domain }}" required>
-                    <span class="help-text">The domain used for dynamic attribution routing (e.g. <code>https://offers.cpa-arbitrage.com</code>). Required.</span>
-                </div>
-            </div>
+      <div class="field">
+        <label for="postback_secret">Postback HMAC Secret</label>
+        <input id="postback_secret" name="postback_secret" value="{{ settings.postback_secret }}">
+        <span class="hint">Must match the secret your affiliate network signs postbacks with.</span>
+      </div>
 
-            <!-- Active Sectors Toggles -->
-            <div class="form-section">
-                <div class="section-title">⚙️ Active Sourcing Sectors</div>
-                <span class="help-text">Deactivate sectors you don't wish to crawl or target during automated morning/evening sweeps.</span>
-                <div class="sectors-grid">
-                    {% for sec in sectors_list %}
-                    <label class="sector-checkbox-card">
-                        <input type="checkbox" name="sector_{{ sec.key }}" {% if sec.active %}checked{% endif %}>
-                        <span class="sector-label">{{ sec.display }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
-            </div>
+      <div class="field">
+        <label for="commission_rates">Commission Rates (JSON)</label>
+        <textarea id="commission_rates" name="commission_rates" rows="4">{{ settings.commission_rates }}</textarea>
+        <span class="hint">e.g. {"electronics": 0.03, "home_kitchen": 0.035}</span>
+      </div>
 
-            <!-- Legacy SRE Configurations -->
-            <div class="form-section">
-                <div class="section-title">🛡️ SRE Security Configurations</div>
-                <div class="form-group">
-                    <label for="postback_secret">Conversion Webhook Secret (HMAC-SHA256)</label>
-                    <input type="text" id="postback_secret" name="postback_secret" value="{{ postback_secret }}" required>
-                    <span class="help-text">Used to verify authenticity of conversion postbacks from affiliate networks.</span>
-                </div>
+      <button type="submit" class="btn primary">Save Settings</button>
+    </form>
+  </div>
 
-                <div class="form-group">
-                    <label for="commission_rates">Merchant Commission Schedules (JSON)</label>
-                    <textarea id="commission_rates" name="commission_rates" required>{{ commission_rates }}</textarea>
-                    <span class="help-text">Define sector-specific and merchant-specific commission rates as a valid JSON object. Fallbacks will apply automatically.</span>
-                </div>
-            </div>
-
-            <button type="submit" class="btn">Save Configuration</button>
-        </form>
-    </div>
-</body>
-</html>
+  <div class="panel">
+    <h2>Compliance Notes</h2>
+    <ul class="hint">
+      <li>Organic traffic only — no incentivized clicks, cashback loops, or phone spoofing.</li>
+      <li>All outbound copy carries the ASCI affiliate disclosure automatically.</li>
+      <li>Redirects are restricted to the <code>TRUSTED_DOMAINS</code> whitelist.</li>
+      <li>Conversion postbacks require a valid HMAC-SHA256 <code>X-Signature</code>.</li>
+      <li>Duplicate transactions are rejected by the idempotency layer.</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

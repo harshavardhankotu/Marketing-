@@ -1,226 +1,101 @@
 """
-Price-Drop & Restock Alert Engine
-─────────────────────────────────────────────────────
-Replicates: CamelCamelCamel, Keepa, Amazon Price Alerts
+Administrative failure-alerting engine.
 
-Compares latest scrape against previous state stored in SQLite.
-Detects price drops, restocks, and discount increases.
-Outputs alert events that feed into journey/distribution.
+Sends operational alerts (circuit trips, quota blocks, dead-letter jobs,
+failed distributions) to the configured Telegram admin chat. Uses the same
+resilience shield as outbound distribution so alerts never hammer the API.
 
-Input:  data/output/ranked_products.json (or segmented_products.json)
-Output: data/output/alerts.json
+When Telegram credentials are absent (e.g. local dev) alerts are logged to
+stdout instead of failing loudly.
 """
 
-import json, os, sqlite3
-from datetime import datetime
+import os
+import sys
+import time
+import requests
 
-from config import DB_PATH, OUTPUT_DIR
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-# ═══════════════════════════════════════════════════════════════════════
-# CONFIG
-# ═══════════════════════════════════════════════════════════════════════
+from config import TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_ID  # noqa: E402
+from quota_manager import consume_quota, QuotaExceededException  # noqa: E402
 
-PRICE_DROP_THRESHOLD = 5      # % drop to trigger alert
-DISCOUNT_INCREASE_MIN = 5     # % increase in discount to trigger
-RESTOCK_THRESHOLD = 0         # previous stock was <= this
+# Recent alerts held in-memory for the dashboard ticker.
+_ALERT_BUFFER = []
+_MAX_BUFFER = 50
 
-# ═══════════════════════════════════════════════════════════════════════
-# SCHEMA
-# ═══════════════════════════════════════════════════════════════════════
 
-def setup_tables():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    c = conn.cursor()
+def _is_configured():
+    return bool(TELEGRAM_BOT_TOKEN) and bool(ADMIN_TELEGRAM_ID) and 'your_' not in TELEGRAM_BOT_TOKEN
 
-    # Stores the latest known state of each product
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS product_snapshots (
-        product_id TEXT PRIMARY KEY,
-        title TEXT,
-        sector TEXT,
-        price REAL,
-        discount REAL,
-        stock INTEGER,
-        rating REAL,
-        snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+def _log_local(level, message):
+    print(f"[ALERT:{level}] {message}")
+    _ALERT_BUFFER.append({"level": level, "message": message, "timestamp": time.time()})
+    if len(_ALERT_BUFFER) > _MAX_BUFFER:
+        del _ALERT_BUFFER[: len(_ALERT_BUFFER) - _MAX_BUFFER]
+
+
+def send_telegram_alert(message, level="info"):
+    """
+    Dispatch an alert to the admin Telegram chat.
+
+    Returns the API response dict on success, ``None`` when not configured.
+    Quota/breaker failures degrade to a local log rather than an exception.
+    """
+    _log_local(level, message)
+    if not _is_configured():
+        return None
+
+    try:
+        consume_quota("telegram")
+    except QuotaExceededException:
+        print("[ALERT_ENGINE] Telegram quota exhausted — alert logged locally only.")
+        return None
+
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        resp = requests.post(
+            url,
+            json={"chat_id": ADMIN_TELEGRAM_ID, "text": message, "disable_web_page_preview": True},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        print(f"[ALERT_ENGINE] Failed to deliver Telegram alert: {exc}")
+        return None
+
+
+def notify_circuit_trip(provider):
+    send_telegram_alert(
+        f"⚠️ CIRCUIT BREAKER TRIPPED\nProvider: `{provider}`\nOutbound calls will be short-circuited until cooldown.",
+        level="warning",
     )
-    ''')
 
-    # Alert event log
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS alert_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id TEXT,
-        title TEXT,
-        sector TEXT,
-        alert_type TEXT,
-        old_value TEXT,
-        new_value TEXT,
-        change_pct REAL,
-        priority TEXT DEFAULT 'normal',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+def notify_quota_block(provider, usage, cap):
+    send_telegram_alert(
+        f"🚫 DAILY QUOTA BLOCKED\nProvider: `{provider}`\nUsage {usage}/{cap}. Resets at midnight UTC.",
+        level="warning",
     )
-    ''')
-
-    conn.commit()
-    conn.close()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# CORE DETECTION
-# ═══════════════════════════════════════════════════════════════════════
-
-def detect_alerts(products):
-    """Compare products against stored snapshots. Returns list of alerts."""
-    setup_tables()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    alerts = []
-
-    for p in products:
-        pid = p.get("id") or p.get("product_id", "")
-        if not pid:
-            continue
-
-        title = p.get("title", "Unknown")
-        sector = p.get("sector", "")
-        price = float(p.get("price", 0))
-        discount = float(p.get("discount", 0))
-        stock = int(p.get("stock", 50))
-        rating = float(p.get("rating", 0) or 0)
-
-        # Get previous snapshot
-        c.execute("SELECT * FROM product_snapshots WHERE product_id = ?", (pid,))
-        prev = c.fetchone()
-
-        if prev:
-            old_price = float(prev["price"])
-            old_discount = float(prev["discount"])
-            old_stock = int(prev["stock"])
-
-            # 1) Price Drop
-            if old_price > 0 and price < old_price:
-                drop_pct = round(((old_price - price) / old_price) * 100, 1)
-                if drop_pct >= PRICE_DROP_THRESHOLD:
-                    alert = {
-                        "product_id": pid, "title": title, "sector": sector,
-                        "alert_type": "price_drop",
-                        "old_value": str(old_price), "new_value": str(price),
-                        "change_pct": drop_pct,
-                        "priority": "high" if drop_pct >= 15 else "normal",
-                        "message": f"💸 Price dropped {drop_pct}% (₹{old_price} → ₹{price})",
-                        "journey_trigger": "price_drop_alert",
-                    }
-                    alerts.append(alert)
-
-            # 2) Restock
-            if old_stock <= RESTOCK_THRESHOLD and stock > 5:
-                alert = {
-                    "product_id": pid, "title": title, "sector": sector,
-                    "alert_type": "restock",
-                    "old_value": str(old_stock), "new_value": str(stock),
-                    "change_pct": 0,
-                    "priority": "high",
-                    "message": f"🔄 Back in stock! ({old_stock} → {stock} units)",
-                    "journey_trigger": "back_in_stock",
-                }
-                alerts.append(alert)
-
-            # 3) Discount Increase
-            if discount > old_discount:
-                disc_increase = round(discount - old_discount, 1)
-                if disc_increase >= DISCOUNT_INCREASE_MIN:
-                    alert = {
-                        "product_id": pid, "title": title, "sector": sector,
-                        "alert_type": "discount_increase",
-                        "old_value": str(old_discount), "new_value": str(discount),
-                        "change_pct": disc_increase,
-                        "priority": "high" if discount >= 25 else "normal",
-                        "message": f"🔥 Discount increased! ({old_discount}% → {discount}% off)",
-                        "journey_trigger": "limited_deal_window",
-                    }
-                    alerts.append(alert)
-
-            # 4) Low Stock Warning (was available, now scarce)
-            if old_stock >= 10 and stock < 5 and stock > 0:
-                alert = {
-                    "product_id": pid, "title": title, "sector": sector,
-                    "alert_type": "low_stock_warning",
-                    "old_value": str(old_stock), "new_value": str(stock),
-                    "change_pct": 0,
-                    "priority": "normal",
-                    "message": f"⚠️ Running low! Only {stock} left (was {old_stock})",
-                    "journey_trigger": "scarcity_push",
-                }
-                alerts.append(alert)
-
-        # Update snapshot
-        c.execute('''
-        INSERT OR REPLACE INTO product_snapshots
-            (product_id, title, sector, price, discount, stock, rating, snapshot_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (pid, title, sector, price, discount, stock, rating,
-              datetime.utcnow().isoformat()))
-
-    # Save alert events to DB
-    for a in alerts:
-        c.execute('''
-        INSERT INTO alert_events
-            (product_id, title, sector, alert_type, old_value, new_value, change_pct, priority)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (a["product_id"], a["title"], a["sector"], a["alert_type"],
-              a["old_value"], a["new_value"], a["change_pct"], a["priority"]))
-
-    conn.commit()
-    conn.close()
-    return alerts
+def notify_dead_letter(job_id, job_type, error):
+    send_telegram_alert(
+        f"📦 DEAD-LETTER JOB\nJob ID: `{job_id}`\nType: `{job_type}`\nError: {error[:300]}",
+        level="error",
+    )
 
 
-def get_recent_alerts(limit=50):
-    """Get recent alerts for dashboard display."""
-    setup_tables()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM alert_events ORDER BY created_at DESC LIMIT ?", (limit,))
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+def notify_distribution_failure(campaign_id, channel, error):
+    send_telegram_alert(
+        f"❌ DISTRIBUTION FAILURE\nCampaign: `{campaign_id}`\nChannel: `{channel}`\nError: {error[:300]}",
+        level="error",
+    )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# RUNNER
-# ═══════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    print("Running Alert Engine...")
-
-    # Try ranked first, fall back to segmented
-    ranked_path = os.path.join(OUTPUT_DIR, "ranked_products.json")
-    seg_path = os.path.join(OUTPUT_DIR, "segmented_products.json")
-
-    source = ranked_path if os.path.exists(ranked_path) else seg_path
-    if not os.path.exists(source):
-        print("No product data found. Skipping alerts.")
-        # Write empty alerts
-        with open(os.path.join(OUTPUT_DIR, "alerts.json"), "w") as f:
-            json.dump([], f)
-    else:
-        with open(source, "r", encoding="utf-8") as f:
-            products = json.load(f)
-
-        alerts = detect_alerts(products)
-
-        out_path = os.path.join(OUTPUT_DIR, "alerts.json")
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(alerts, f, indent=4, ensure_ascii=False)
-
-        print(f"Detected {len(alerts)} alerts.")
-        for a in alerts[:5]:
-            try:
-                print(f"  [{a['alert_type']}] {a['title']}: {a['message']}")
-            except UnicodeEncodeError:
-                print(f"  [{a['alert_type']}] {a['title']}: {a['alert_type']} detected")
+def get_recent_alerts(limit=20):
+    """Return recent in-memory alerts (for the dashboard ticker)."""
+    return list(reversed(_ALERT_BUFFER[-limit:]))

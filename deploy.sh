@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# CPA LEAD ARBITRAGE & UPI PAYOUT SUITE - UBUNTU VPS MASTER DEPLOYMENT SCRIPT
+# AUTONOMOUS AFFILIATE MARKETING & ML OPTIMIZATION SUITE - UBUNTU VPS
+# MASTER DEPLOYMENT SCRIPT
 # ==============================================================================
 # Supported OS: Ubuntu 20.04 LTS / 22.04 LTS / 24.04 LTS
 # Enforce execution as root operator.
@@ -78,6 +79,14 @@ apt-get install -y \
     debian-archive-keyring \
     apt-transport-https
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 3b. Playwright Headless Browser System Dependencies (deal sourcing)
+# ──────────────────────────────────────────────────────────────────────────────
+log_info "Installing Playwright system library dependencies..."
+if command -v playwright &> /dev/null; then
+    playwright install-deps || log_warn "Playwright deps install skipped (optional for RSS/PA-API sourcing)."
+fi
+
 # ------------------------------------------------------------------------------
 # 4. Install Caddy Server (Preferred Auto-SSL Reverse Proxy)
 # ------------------------------------------------------------------------------
@@ -109,13 +118,14 @@ log_info "Installing Gunicorn production server..."
 pip install gunicorn
 
 # ------------------------------------------------------------------------------
-# 6. Playwright Headless Browser Installation
+# 6. Playwright Chromium Browser Installation
 # ------------------------------------------------------------------------------
-log_info "Installing Playwright system library dependencies..."
-venv/bin/playwright install-deps
-
-log_info "Installing Chromium browser binaries for lead scraping..."
-venv/bin/playwright install chromium
+log_info "Installing Chromium browser binaries for deal sourcing..."
+if command -v venv/bin/playwright &> /dev/null; then
+    venv/bin/playwright install chromium || log_warn "Playwright Chromium install skipped (optional)."
+else
+    log_warn "Playwright not installed — RSS/PA-API sourcing will be used instead."
+fi
 
 # ------------------------------------------------------------------------------
 # 7. Configure and Initialize Daemon Service
@@ -212,7 +222,7 @@ fi
 echo -e "\n"
 print_line="================================================================================"
 echo -e "${GREEN}$print_line"
-echo -e "   CPA LEAD GENERATION & UPI PAYOUT SUITE DEPLOYED SUCCESSFULLY!"
+echo -e "   AUTONOMOUS AFFILIATE MARKETING & ML OPTIMIZATION SUITE DEPLOYED!"
 echo -e "$print_line${NC}"
 echo -e "Your application daemon is now fully isolated, secure, and running 24/7."
 echo -e ""

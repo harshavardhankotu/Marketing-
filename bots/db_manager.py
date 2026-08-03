@@ -1,461 +1,490 @@
-import sqlite3
-import json
-import os
-from config import DB_PATH
+"""
+SQLite database manager for the Autonomous Affiliate Marketing Suite.
 
-# Monkeypatch sqlite3.connect to enforce foreign keys on every single connection
+Enforces strict compliance constraints:
+    * NO ``user_wallets`` table.
+    * NO ``payout_transactions`` table.
+    * NO ``cpa_phone_pool`` / DNI telephony infrastructure.
+
+Every database connection is wrapped in ``try / except / finally`` so the
+connection is ALWAYS closed, preventing handle leakage on Windows.
+Write paths that mutate multiple rows use explicit ``BEGIN IMMEDIATE``
+write-locks to avoid SQLITE_BUSY contention in WAL mode.
+"""
+
+import os
+import json
+import sqlite3
+from datetime import datetime
+
+try:
+    from config import DB_PATH
+except ImportError:  # allow `python bots/db_manager.py` to work directly
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from config import DB_PATH
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GLOBAL PRAGMA ENFORCEMENT
+# ─────────────────────────────────────────────────────────────────────────────
 _orig_connect = sqlite3.connect
-def _custom_connect(*args, **kwargs):
+
+
+def _hardened_connect(*args, **kwargs):
+    """Wrap sqlite3.connect so every new connection enforces foreign keys."""
     conn = _orig_connect(*args, **kwargs)
     try:
         conn.execute("PRAGMA foreign_keys = ON;")
-    except Exception:
+    except sqlite3.Error:
         pass
     return conn
-sqlite3.connect = _custom_connect
+
+
+sqlite3.connect = _hardened_connect
+
+
+def _connection(timeout=30.0):
+    """Open a new WAL-mode connection with foreign keys enabled."""
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCHEMA
+# ─────────────────────────────────────────────────────────────────────────────
+SCHEMA_STATEMENTS = [
+    # 1. Campaigns
+    """
+    CREATE TABLE IF NOT EXISTS campaigns (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id  TEXT,
+        title       TEXT NOT NULL,
+        sector      TEXT,
+        target_url  TEXT,
+        price       REAL DEFAULT 0.0,
+        discount    REAL DEFAULT 0.0,
+        commission  REAL DEFAULT 0.0,
+        caption     TEXT,
+        graphic_path TEXT,
+        status      TEXT DEFAULT 'pending_approval',
+        publish_at  TIMESTAMP,
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # 2. Distribution logs
+    """
+    CREATE TABLE IF NOT EXISTS distribution_logs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id  INTEGER,
+        channel      TEXT,
+        message_id   TEXT,
+        status       TEXT,
+        timestamp    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+    )
+    """,
+    # 3. Affiliate clicks (human-only analytics)
+    """
+    CREATE TABLE IF NOT EXISTS affiliate_clicks (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id  TEXT,
+        channel     TEXT,
+        session_id  TEXT,
+        user_agent  TEXT,
+        ip_address  TEXT,
+        is_bot      INTEGER DEFAULT 0,
+        variant     TEXT,
+        timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # 4. Affiliate conversions (single-write, idempotent)
+    """
+    CREATE TABLE IF NOT EXISTS affiliate_conversions (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        transaction_id    TEXT UNIQUE,
+        product_id        TEXT,
+        session_id        TEXT,
+        sale_amount       REAL DEFAULT 0.0,
+        commission_amount REAL DEFAULT 0.0,
+        status            TEXT DEFAULT 'converted',
+        timestamp         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # 5. System settings (key/value KV store)
+    """
+    CREATE TABLE IF NOT EXISTS system_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """,
+    # 6. Operator settings
+    """
+    CREATE TABLE IF NOT EXISTS operator_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """,
+    # 7. Admin users (bcrypt hashed)
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        username      TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role          TEXT DEFAULT 'admin',
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # 8. Stateful circuit breakers
+    """
+    CREATE TABLE IF NOT EXISTS circuit_breaker_state (
+        provider       TEXT PRIMARY KEY,
+        state          TEXT DEFAULT 'CLOSED',
+        failure_count  INTEGER DEFAULT 0,
+        success_count  INTEGER DEFAULT 0,
+        last_failure   TIMESTAMP,
+        tripped_at     TIMESTAMP
+    )
+    """,
+    # 9. Daily API quota usage
+    """
+    CREATE TABLE IF NOT EXISTS api_quota_usage (
+        provider      TEXT,
+        usage_date    TEXT,
+        request_count INTEGER DEFAULT 0,
+        PRIMARY KEY (provider, usage_date)
+    )
+    """,
+    # 10. Scheduler jobs
+    """
+    CREATE TABLE IF NOT EXISTS scheduler_jobs (
+        job_id        TEXT PRIMARY KEY,
+        job_label     TEXT,
+        job_type      TEXT,
+        schedule_expr TEXT,
+        enabled       INTEGER DEFAULT 1,
+        next_run_at   TIMESTAMP,
+        last_run_at   TIMESTAMP,
+        last_status   TEXT,
+        last_error    TEXT,
+        run_count     INTEGER DEFAULT 0
+    )
+    """,
+    # 11. Idempotency keys (prevents double-counted conversions/webhooks)
+    """
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+        transaction_id TEXT PRIMARY KEY,
+        event_type     TEXT,
+        processed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # 12. Background job queue
+    """
+    CREATE TABLE IF NOT EXISTS job_queue (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type     TEXT NOT NULL,
+        payload      TEXT,
+        status       TEXT DEFAULT 'pending',
+        retry_count  INTEGER DEFAULT 0,
+        max_retries  INTEGER DEFAULT 3,
+        last_error   TEXT,
+        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # 13. Dead-letter queue for failed distributions
+    """
+    CREATE TABLE IF NOT EXISTS dead_letter_jobs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type    TEXT NOT NULL,
+        payload     TEXT,
+        error       TEXT,
+        failed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+]
+
+# Seed rows for system_settings (spec section B item 5)
+SYSTEM_SETTINGS_SEED = {
+    "primary_routing_domain": "https://www.amazon.in",
+    "auto_publish_timeout": "30",
+}
+
+# Seed rows for circuit breakers
+CIRCUIT_BREAKER_PROVIDERS = ["gemini", "telegram", "amazon_paapi", "twitter", "instagram", "meta"]
+
+
+def _migrate_schema(cursor):
+    """Add columns introduced after the original schema was shipped.
+
+    Uses ``ALTER TABLE ADD COLUMN`` guarded by a duplicate-column check so this
+    is safe to run on both fresh and pre-existing databases.
+    """
+    _ALTER_STATEMENTS = [
+        ("campaigns", "caption", "TEXT"),
+        ("campaigns", "graphic_path", "TEXT"),
+        ("affiliate_clicks", "session_id", "TEXT"),
+    ]
+    for table, column, col_type in _ALTER_STATEMENTS:
+        try:
+            existing = {
+                row["name"]
+                for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if column not in existing:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        except sqlite3.Error as exc:
+            print(f"[DB_MANAGER] schema migration skipped ({table}.{column}): {exc}")
+
 
 def setup_database():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    """Create every table idempotently and seed default rows."""
+    from config import ensure_directories
+    ensure_directories()
+    conn = _connection()
     try:
-        # Enable Write-Ahead Logging (WAL) mode for concurrent read/write and deadlock prevention
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
-        
-        # 1. Campaigns & Distribution
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS campaigns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id TEXT,
-            title TEXT,
-            price TEXT,
-            platform TEXT,
-            sector TEXT,
-            affiliate_link TEXT,
-            caption TEXT,
-            graphic_path TEXT,
-            total_views INTEGER DEFAULT 0,
-            total_clicks INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS distribution_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            campaign_id INTEGER,
-            platform TEXT,
-            status TEXT,
-            link TEXT,
-            views INTEGER DEFAULT 0,
-            clicks INTEGER DEFAULT 0,
-            message_id TEXT,
-            FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
-        )''')
+        for statement in SCHEMA_STATEMENTS:
+            cursor.execute(statement)
 
-        # 2. Affiliate Tracking
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS affiliate_clicks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id TEXT,
-            product_title TEXT,
-            sector TEXT,
-            channel TEXT,
-            affiliate_link TEXT,
-            user_agent TEXT,
-            referrer TEXT,
-            session_id TEXT,
-            revenue_score REAL,
-            est_commission_pct REAL,
-            clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            is_bot INTEGER DEFAULT 0
-        )''')
+        _migrate_schema(cursor)
 
-        # Safe migration for affiliate_clicks 'is_bot' column if it doesn't exist
-        cursor.execute("PRAGMA table_info(affiliate_clicks)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if 'is_bot' not in columns:
-            cursor.execute("ALTER TABLE affiliate_clicks ADD COLUMN is_bot INTEGER DEFAULT 0")
+        # Seed system_settings
+        for key, value in SYSTEM_SETTINGS_SEED.items():
+            cursor.execute(
+                "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
 
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS affiliate_conversions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            click_id INTEGER,
-            product_id TEXT NOT NULL,
-            status TEXT DEFAULT 'pending_conversion',
-            sale_amount REAL DEFAULT 0,
-            commission_amount REAL DEFAULT 0,
-            converted_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (click_id) REFERENCES affiliate_clicks (id)
-        )''')
+        # Seed circuit breakers
+        for provider in CIRCUIT_BREAKER_PROVIDERS:
+            cursor.execute(
+                "INSERT OR IGNORE INTO circuit_breaker_state (provider, state, failure_count, success_count) "
+                "VALUES (?, 'CLOSED', 0, 0)",
+                (provider,),
+            )
 
-        # 3. Scheduler Engine
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS scheduler_jobs (
-            job_id        TEXT PRIMARY KEY,
-            job_label     TEXT,
-            job_type      TEXT,
-            schedule_expr TEXT,
-            enabled       INTEGER DEFAULT 1,
-            next_run_at   TIMESTAMP,
-            last_run_at   TIMESTAMP,
-            last_status   TEXT,
-            last_error    TEXT,
-            run_count     INTEGER DEFAULT 0
-        )''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS scheduler_runs (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id         TEXT NOT NULL,
-            started_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            finished_at    TIMESTAMP,
-            status         TEXT,
-            result_summary TEXT,
-            error_message  TEXT,
-            duration_secs  REAL,
-            FOREIGN KEY (job_id) REFERENCES scheduler_jobs (job_id)
-        )''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS scheduler_locks (
-            job_id     TEXT PRIMARY KEY,
-            locked_at  TIMESTAMP,
-            locked_by  TEXT
-        )''')
-
-        # 4. Retargeting Logs
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS retargeting_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            click_id INTEGER NOT NULL,
-            product_id TEXT NOT NULL,
-            session_id TEXT,
-            strategy TEXT,
-            retargeted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (click_id) REFERENCES affiliate_clicks (id)
-        )''')
-
-        # 5. Reliability Schema Tables
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS api_quota_usage (
-            provider TEXT,
-            usage_date DATE,
-            request_count INTEGER DEFAULT 0,
-            PRIMARY KEY (provider, usage_date)
-        )''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS circuit_breaker_state (
-            provider TEXT PRIMARY KEY,
-            state TEXT DEFAULT 'CLOSED',
-            failure_count INTEGER DEFAULT 0,
-            success_count INTEGER DEFAULT 0,
-            last_failure_at TIMESTAMP,
-            tripped_at TIMESTAMP
-        )''')
-
-        # Seed circuit breaker states for immediate visibility on SRE dashboard
-        for provider in ['gemini', 'telegram', 'lead_aggregator', 'twilio_voice', 'instagram', 'twitter', 'whatsapp']:
-            cursor.execute("""
-            INSERT OR IGNORE INTO circuit_breaker_state (provider, state, failure_count, success_count)
-            VALUES (?, 'CLOSED', 0, 0)
-            """, (provider,))
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS processed_events (
-            event_id TEXT PRIMARY KEY,
-            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS job_queue (
-            job_id TEXT PRIMARY KEY,
-            task_name TEXT NOT NULL,
-            payload TEXT,
-            state TEXT DEFAULT 'pending',
-            retry_count INTEGER DEFAULT 0,
-            max_retries INTEGER DEFAULT 3,
-            last_error TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            scheduled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS dead_letter_jobs (
-            job_id TEXT PRIMARY KEY,
-            task_name TEXT NOT NULL,
-            payload TEXT,
-            failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            final_error TEXT
-        )''')
-
-        # 6. Session-Backed Users
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE,
-            password_hash TEXT,
-            role TEXT DEFAULT 'admin',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-
-        # 7. Retargeting Suppression Table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS retargeting_suppression (
-            session_id TEXT,
-            product_id TEXT,
-            converted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (session_id, product_id)
-        )''')
-
-        # 8. Conversion Postback Log
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS conversion_postback_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_id TEXT UNIQUE,
-            product_id TEXT,
-            commission_value REAL,
-            network_name TEXT,
-            received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            raw_payload TEXT
-        )''')
-
-        # 9. Operator Settings Table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS operator_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )''')
-        
-        # Seed default commission rates
-        cursor.execute("SELECT 1 FROM operator_settings WHERE key = 'commission_rates'")
-        if not cursor.fetchone():
-            default_rates = {
-                "cpa_lead_net_9876": {
-                    "default": 35,
-                    "auto_insurance": 45,
-                    "health_insurance": 40,
-                    "debt_relief": 50,
-                    "solar_energy": 45,
-                    "home_security": 40,
-                    "live_links": 35
-                }
-            }
-            cursor.execute("INSERT INTO operator_settings (key, value) VALUES ('commission_rates', ?)", (json.dumps(default_rates),))
-            
-        # Seed postback secret
-        cursor.execute("SELECT 1 FROM operator_settings WHERE key = 'postback_secret'")
-        if not cursor.fetchone():
-            from dotenv import load_dotenv
-            load_dotenv()
-            default_secret = os.getenv('POSTBACK_SECRET', 'default_secret_key_123')
-            cursor.execute("INSERT INTO operator_settings (key, value) VALUES ('postback_secret', ?)", (default_secret,))
-
-        # 10. Dynamic Agency system_settings Table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS system_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )''')
-
-        # Seed default agency settings
-        defaults = {
-            "cpa_network_id": "cpa_lead_net_9876",
-            "primary_routing_domain": "https://offers.cpa-arbitrage.com",
-            "auto_publish_timeout": "30",
-            "active_sectors": json.dumps({
-                "auto_insurance": True,
-                "health_insurance": True,
-                "debt_relief": True,
-                "solar_energy": True,
-                "home_security": True,
-                "live_links": True
-            })
-        }
-        for k, v in defaults.items():
-            cursor.execute("SELECT 1 FROM system_settings WHERE key = ?", (k,))
-            if not cursor.fetchone():
-                cursor.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", (k, v))
-
-        # 11. Telephony Pool Table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS cpa_phone_pool (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tracking_number TEXT UNIQUE,
-            extension_pin TEXT,
-            assigned_campaign_id INTEGER,
-            assigned_product_id TEXT,
-            allocated_at TIMESTAMP,
-            status TEXT DEFAULT 'available',
-            FOREIGN KEY (assigned_campaign_id) REFERENCES campaigns (id)
-        )''')
-
-        # Seed default cpa_phone_pool values if empty
-        cursor.execute("SELECT COUNT(*) FROM cpa_phone_pool")
-        if cursor.fetchone()[0] == 0:
-            phone_seeds = [
-                ("+18005550101", "101"),
-                ("+18005550102", "102"),
-                ("+18005550103", "103"),
-                ("+18005550104", "104"),
-                ("+18005550105", "105"),
-                ("+18005550199", "199"),
-                ("+18005550201", "201"),
-                ("+18005550202", "202"),
-                ("+18005550301", "301"),
-                ("+18005550401", "401"),
-                ("+18005550501", "501")
-            ]
-            for number, pin in phone_seeds:
-                cursor.execute("""
-                INSERT OR IGNORE INTO cpa_phone_pool (tracking_number, extension_pin, status)
-                VALUES (?, ?, 'available')
-                """, (number, pin))
-
-        # Safe dynamic migration: add status and publish_at to campaigns if not exist
-        cursor.execute("PRAGMA table_info(campaigns)")
-        campaign_cols = [row[1] for row in cursor.fetchall()]
-        if 'status' not in campaign_cols:
-            cursor.execute("ALTER TABLE campaigns ADD COLUMN status TEXT DEFAULT 'published'")
-        if 'publish_at' not in campaign_cols:
-            cursor.execute("ALTER TABLE campaigns ADD COLUMN publish_at TIMESTAMP")
-        
-        # Safe dynamic migration: add variant to affiliate_clicks if not exist
-        cursor.execute("PRAGMA table_info(affiliate_clicks)")
-        click_cols = [row[1] for row in cursor.fetchall()]
-        if 'variant' not in click_cols:
-            cursor.execute("ALTER TABLE affiliate_clicks ADD COLUMN variant TEXT")
-
-        # Safe dynamic migration: add message_id to distribution_logs if not exist
-        cursor.execute("PRAGMA table_info(distribution_logs)")
-        dist_cols = [row[1] for row in cursor.fetchall()]
-        if 'message_id' not in dist_cols:
-            cursor.execute("ALTER TABLE distribution_logs ADD COLUMN message_id TEXT")
-        
-        # 12. Phase 10: UPI Wallet & Payout Transactions
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_wallets (
-            user_id TEXT PRIMARY KEY,
-            available_balance REAL CHECK (available_balance >= 0.0) DEFAULT 0.0
-        )''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS payout_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            payout_id TEXT UNIQUE,
-            user_id TEXT,
-            payout_amount REAL CHECK (payout_amount > 0.0),
-            upi_id TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-
-        # Seed initial wallet balance for testing
-        cursor.execute("SELECT COUNT(*) FROM user_wallets")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT OR IGNORE INTO user_wallets (user_id, available_balance) VALUES ('test_user', 500.0)")
-            cursor.execute("INSERT OR IGNORE INTO user_wallets (user_id, available_balance) VALUES ('guest@marketing.ai', 2500.0)")
-        
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as exc:
         conn.rollback()
-        print(f"ERROR: Database setup failed: {e}")
-        raise e
+        print(f"[DB_MANAGER] setup_database failed: {exc}")
+        raise
     finally:
         conn.close()
 
 
-def save_campaign(campaign_data, sector="tech"):
-    setup_database()
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+# ─────────────────────────────────────────────────────────────────────────────
+# USERS
+# ─────────────────────────────────────────────────────────────────────────────
+def seed_admin_user(username="admin", password=None):
+    """Create the initial admin user if it does not exist."""
+    import bcrypt
+
+    if password is None:
+        try:
+            from config import ADMIN_DEFAULT_PASSWORD
+            password = ADMIN_DEFAULT_PASSWORD
+        except ImportError:
+            password = "admin123"
+
+    conn = _connection()
     try:
-        # Acquire write lock immediately to prevent concurrent write deadlocks
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+        if not cursor.fetchone():
+            hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            cursor.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+                (username, hashed),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMPAIGNS
+# ─────────────────────────────────────────────────────────────────────────────
+def save_campaign(campaign_data, sector="electronics"):
+    """
+    Persist a campaign together with its distribution log entries inside a
+    single ``BEGIN IMMEDIATE`` write-lock transaction.
+    """
+    setup_database()
+    conn = _connection()
+    try:
         conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
-        
-        metrics = campaign_data.get('total_metrics', {})
-        
-        # Fetch auto-publish timeout from settings (default to 30 mins)
-        cursor.execute("SELECT value FROM system_settings WHERE key = 'auto_publish_timeout'")
-        row = cursor.fetchone()
-        timeout_mins = int(row[0]) if row else 30
-        
-        from datetime import datetime, timedelta
-        publish_at_dt = datetime.utcnow() + timedelta(minutes=timeout_mins)
-        publish_at_str = publish_at_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Insert main campaign in 'pending_approval' state
-        cursor.execute('''
-        INSERT INTO campaigns (product_id, title, price, platform, sector, affiliate_link, caption, graphic_path, total_views, total_clicks, status, publish_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
-        ''', (
-            campaign_data.get('id', 'N/A'),
-            campaign_data.get('title', ''),
-            campaign_data.get('price', ''),
-            campaign_data.get('platform', ''),
-            sector,
-            campaign_data.get('affiliate_link', ''),
-            campaign_data.get('caption', ''),
-            campaign_data.get('graphic_path', ''),
-            metrics.get('total_views', 0),
-            metrics.get('total_clicks', 0),
-            publish_at_str
-        ))
-        
+        timeout_mins = get_system_setting("auto_publish_timeout", "30")
+        try:
+            timeout_mins = int(timeout_mins)
+        except (TypeError, ValueError):
+            timeout_mins = 30
+
+        from datetime import timedelta
+        publish_at = (datetime.utcnow() + timedelta(minutes=timeout_mins)).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            """
+            INSERT INTO campaigns
+                (product_id, title, sector, target_url, price, discount, commission,
+                 caption, graphic_path, status, publish_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
+            """,
+            (
+                campaign_data.get("id") or campaign_data.get("product_id"),
+                campaign_data.get("title", "Untitled"),
+                sector,
+                campaign_data.get("target_url") or campaign_data.get("affiliate_link", ""),
+                float(campaign_data.get("price", 0) or 0),
+                float(campaign_data.get("discount", 0) or 0),
+                float(campaign_data.get("commission", 0) or 0),
+                campaign_data.get("caption", ""),
+                campaign_data.get("graphic_path", ""),
+                publish_at,
+            ),
+        )
         campaign_id = cursor.lastrowid
-        
-        # Sync telephony pool: update assigned_campaign_id for pre-allocated product_id
-        prod_id = campaign_data.get('id')
-        if prod_id:
-            cursor.execute('''
-            UPDATE cpa_phone_pool
-            SET assigned_campaign_id = ?
-            WHERE assigned_product_id = ?
-            ''', (campaign_id, prod_id))
-        
-        # Insert distribution logs
-        for dist in campaign_data.get('distribution', []):
-            d_metrics = dist.get('metrics', {})
-            cursor.execute('''
-            INSERT INTO distribution_logs (campaign_id, platform, status, link, views, clicks)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                campaign_id,
-                dist.get('platform', ''),
-                dist.get('status', ''),
-                dist.get('link', ''),
-                d_metrics.get('views', 0),
-                d_metrics.get('clicks', 0)
-            ))
-            
+
+        for dist in campaign_data.get("distribution", []) or []:
+            cursor.execute(
+                """
+                INSERT INTO distribution_logs (campaign_id, channel, status, message_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    campaign_id,
+                    dist.get("channel", ""),
+                    dist.get("status", ""),
+                    dist.get("message_id"),
+                ),
+            )
+
         conn.commit()
-        print(f"Successfully saved campaign '{campaign_data.get('title')}' to SQL database.")
         return campaign_id
-    except Exception as e:
+    except sqlite3.Error as exc:
         conn.rollback()
-        print(f"ERROR: Failed to save campaign to DB: {e}")
-        raise e
+        print(f"[DB_MANAGER] save_campaign failed: {exc}")
+        raise
     finally:
         conn.close()
 
-def get_system_setting(key, default=""):
-    conn = None
+
+def get_campaign(campaign_id):
+    """Fetch a single campaign row as a dict."""
+    conn = _connection()
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
-        row = cursor.fetchone()
-        if row:
-            return row[0]
-    except Exception:
-        pass
+        row = conn.execute(
+            "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
+        ).fetchone()
+        return dict(row) if row else None
     finally:
-        if conn:
-            conn.close()
-    return default
+        conn.close()
+
+
+def update_campaign_status(campaign_id, status):
+    """Transition a campaign to a new status."""
+    conn = _connection()
+    try:
+        conn.execute("UPDATE campaigns SET status = ? WHERE id = ?", (status, campaign_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_campaigns(status=None, sector=None, limit=100):
+    """List campaigns, optionally filtered by status / sector."""
+    conn = _connection()
+    try:
+        query = "SELECT * FROM campaigns WHERE 1=1"
+        params = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if sector:
+            query += " AND sector = ?"
+            params.append(sector)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in conn.execute(query, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def count_campaigns():
+    """Return the total number of campaigns."""
+    conn = _connection()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+def get_system_setting(key, default=""):
+    """Read a single system setting value."""
+    conn = _connection(timeout=5.0)
+    try:
+        row = conn.execute("SELECT value FROM system_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    finally:
+        conn.close()
+
+
+def set_system_setting(key, value):
+    """Upsert a single system setting value."""
+    conn = _connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+            (key, str(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_operator_setting(key, default=""):
+    """Read a single operator setting value."""
+    conn = _connection(timeout=5.0)
+    try:
+        row = conn.execute("SELECT value FROM operator_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    finally:
+        conn.close()
+
+
+def set_operator_setting(key, value):
+    """Upsert a single operator setting value."""
+    conn = _connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO operator_settings (key, value) VALUES (?, ?)",
+            (key, str(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_postback_secret():
+    """Return the postback HMAC secret (operator override, else env)."""
+    stored = get_operator_setting("postback_secret")
+    if stored:
+        return stored
+    try:
+        from config import POSTBACK_SECRET
+        return POSTBACK_SECRET
+    except ImportError:
+        return "default_secret_key_123"
+
 
 if __name__ == "__main__":
     setup_database()
+    seed_admin_user()
     print("Database setup complete.")
-

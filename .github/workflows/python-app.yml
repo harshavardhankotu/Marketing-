@@ -1,4 +1,4 @@
-# GitHub Actions CI Workflow for CPA Lead Arbitrage & Payout Suite
+# GitHub Actions CI for the Amazon Associates-compliant Affiliate Marketing Suite
 name: Python application build and test
 
 on:
@@ -15,35 +15,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Checkout repository
     - name: Checkout Codebase
       uses: actions/checkout@v4
 
-    # 2. Setup Python environment
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
       with:
         python-version: "3.11"
-        cache: 'pip' # cache pip dependencies for faster builds
+        cache: 'pip'
 
-    # 3. Install system dependencies (ffmpeg required by MoviePy)
-    - name: Install ffmpeg
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
-
-    # 4. Install Python dependencies
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # 5. Install Playwright runtimes and system libraries
-    - name: Install Playwright Browsers & Dependencies
+    - name: Verify Local Backend
+      env:
+        POSTBACK_SECRET: ci_postback_secret
       run: |
-        python -m playwright install --with-deps chromium
+        python tests/verify_local_backend.py
 
-    # 6. Execute Transaction Isolation & Double-Spend Prevention Tests
-    - name: Run Transaction Isolation Tests
+    - name: Verify Attribution & Redirects
+      env:
+        POSTBACK_SECRET: ci_postback_secret
       run: |
-        python tests/verify_phase10_payouts.py
+        python tests/verify_attribution.py
+
+    - name: Verify Security Hardening
+      env:
+        POSTBACK_SECRET: ci_postback_secret
+      run: |
+        python tests/verify_security_hardened.py
+
+    - name: Final E2E Pipeline Check
+      env:
+        POSTBACK_SECRET: ci_postback_secret
+      run: |
+        python tests/final_e2e_check.py

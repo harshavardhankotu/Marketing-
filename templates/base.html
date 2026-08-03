@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Affiliate Suite{% endblock %} · Ledger Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">AFFILIATE<span style="color:var(--text-dim)">::</span>SUITE <small>v1.0 · ledger console</small></div>
+    {% if current_user.is_authenticated %}
+    <div class="nav">
+      <a href="/" class="{% block nav_index %}{% endblock %}">Dashboard</a>
+      <a href="/history" class="{% block nav_history %}{% endblock %}">History</a>
+      {% if current_user.role == 'admin' %}
+      <a href="/settings" class="{% block nav_settings %}{% endblock %}">Settings</a>
+      {% endif %}
+      <a href="/logout">Logout</a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

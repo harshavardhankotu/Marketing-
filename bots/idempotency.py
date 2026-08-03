@@ -1,85 +1,110 @@
-import sqlite3
+"""
+Idempotency guards for webhook conversion processing.
+
+Two layers of protection are applied to every inbound postback:
+
+1. **Signature validation** — HMAC-SHA256 over the raw request body using the
+   shared ``POSTBACK_SECRET``. Prevents forgery.
+2. **Transaction idempotency** — the ``transaction_id`` is stored in the
+   ``idempotency_keys`` table with a PRIMARY KEY. Duplicate deliveries from
+   network retries are rejected atomically.
+
+The exact string sent by the network is matched (canonicalized by stripping
+whitespace) so identical retries are deduplicated, while genuinely distinct
+transactions always pass.
+"""
+
+import hmac
 import hashlib
-import json
+import sqlite3
 import os
 import sys
-from datetime import datetime
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from config import DB_PATH
+from config import DB_PATH  # noqa: E402
+
 
 class IdempotencyError(Exception):
-    pass
+    """Raised when an operation is a duplicate of a previously processed one."""
 
-def generate_operation_id(event_type, unique_payload):
-    """
-    Generates a deterministic operation/event ID based on type and payload.
-    """
-    if isinstance(unique_payload, (dict, list)):
-        payload_str = json.dumps(unique_payload, sort_keys=True)
-    else:
-        payload_str = str(unique_payload)
-    
-    raw = f"{event_type}:{payload_str}"
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
-def check_and_lock(event_id):
+def verify_webhook_signature(raw_body: bytes, signature: str, secret: str) -> bool:
     """
-    Atomically checks if event_id exists. If not, locks it in processed_events.
-    Returns True if successfully locked, False if it was already processed/locked.
+    Validate an HMAC-SHA256 signature over the raw request body.
+
+    Uses ``hmac.compare_digest`` to avoid timing side-channels.
     """
+    if not signature or not raw_body:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature.lower())
+
+
+def _canonical_transaction_id(transaction_id: str) -> str:
+    """Normalise a transaction ID so whitespace differences don't dup-cancel."""
+    return " ".join(str(transaction_id).strip().split())
+
+
+def check_and_mark(transaction_id: str, event_type: str = "conversion"):
+    """
+    Atomically check-and-mark a transaction ID as processed.
+
+    Returns True when the transaction is NEW (and now locked), False when it
+    was already processed (idempotent duplicate).
+    """
+    canonical = _canonical_transaction_id(transaction_id)
+    if not canonical:
+        raise IdempotencyError("Empty transaction_id cannot be idempotency-guarded")
+
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM idempotency_keys WHERE transaction_id = ?", (canonical,))
+        if cursor.fetchone():
+            conn.rollback()
+            return False
         cursor.execute(
-            "INSERT INTO processed_events (event_id, processed_at) VALUES (?, ?)",
-            (event_id, datetime.utcnow().isoformat())
+            "INSERT INTO idempotency_keys (transaction_id, event_type) VALUES (?, ?)",
+            (canonical, event_type),
         )
         conn.commit()
         return True
     except sqlite3.IntegrityError:
-        return False
-    except Exception as e:
-        print(f"[IDEMPOTENCY] Error acquiring lock for {event_id}: {e}")
+        # Raced with another writer — the duplicate already committed.
+        conn.rollback()
         return False
     finally:
         conn.close()
 
-def release_lock(event_id):
-    """
-    Removes the event_id from processed_events, effectively unlocking/releasing it.
-    """
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+
+def is_processed(transaction_id: str) -> bool:
+    """Return True when a transaction ID has already been processed."""
+    canonical = _canonical_transaction_id(transaction_id)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM processed_events WHERE event_id = ?", (event_id,))
+        row = conn.execute(
+            "SELECT 1 FROM idempotency_keys WHERE transaction_id = ?", (canonical,)
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def release(transaction_id: str) -> bool:
+    """Manually release an idempotency lock (used by tests / operators)."""
+    canonical = _canonical_transaction_id(transaction_id)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    try:
+        conn.execute("DELETE FROM idempotency_keys WHERE transaction_id = ?", (canonical,))
         conn.commit()
         return True
-    except Exception as e:
-        print(f"[IDEMPOTENCY] Error releasing lock for {event_id}: {e}")
-        return False
     finally:
         conn.close()
-
-class IdempotentLock:
-    """
-    Context manager to safely lock and optionally release an idempotent operation.
-    """
-    def __init__(self, event_id, auto_release_on_error=True):
-        self.event_id = event_id
-        self.auto_release_on_error = auto_release_on_error
-        self.acquired = False
-
-    def __enter__(self):
-        self.acquired = check_and_lock(self.event_id)
-        if not self.acquired:
-            raise IdempotencyError(f"Operation with ID '{self.event_id}' has already been processed or is currently active.")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None and self.auto_release_on_error and self.acquired:
-            print(f"[IDEMPOTENCY] Operation {self.event_id} failed with error. Releasing lock.")
-            release_lock(self.event_id)
