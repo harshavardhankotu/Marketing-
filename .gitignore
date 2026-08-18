@@ -48,6 +48,9 @@ data/
 static/campaigns/*.mp4
 static/campaigns/*.png
 
+# Generated Ambient UI Backgrounds
+static/backgrounds/
+
 # MoviePy/Image cache logs
 .webassets-cache
 pip-log.txt

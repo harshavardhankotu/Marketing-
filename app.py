@@ -47,10 +47,26 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 import config  # noqa: E402
 import db_manager  # noqa: E402
 from config import OUTPUT_DIR, TRUSTED_DOMAINS  # noqa: E402
+from generators import background_factory  # noqa: E402
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = config.FLASK_SECRET_KEY
 app.config["WTF_CSRF_TIME_LIMIT"] = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AMBIENT BACKGROUND — injected into every template
+# ─────────────────────────────────────────────────────────────────────────────
+@app.context_processor
+def _inject_ambient_background():
+    try:
+        bg = background_factory.get_background_for_ui()
+    except Exception:
+        bg = {
+            "theme": "train", "has_video": False,
+            "video_url": "", "poster_url": "",
+        }
+    return {"bg": bg}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -644,12 +660,42 @@ def serve_campaign_asset(filename):
     return send_from_directory(CAMPAIGN_STATIC_DIR, filename)
 
 
+@app.route("/api/background/status")
+@login_required
+def api_background_status():
+    themes = background_factory.list_themes()
+    active = background_factory.get_background_for_ui().get("theme", "train")
+    return jsonify({"status": "success", "themes": themes, "active": active})
+
+
+@app.route("/api/background/<theme>", methods=["POST"])
+@login_required
+def api_background_set(theme):
+    if theme not in background_factory.THEMES:
+        return jsonify({"status": "error", "message": f"Unknown theme: {theme}"}), 400
+    try:
+        background_factory.set_active_theme(theme)
+        background_factory.render_poster(theme)
+        return jsonify({
+            "status": "success",
+            "message": f"Ambient theme switched to '{theme}'.",
+            "active": theme,
+            "poster_url": f"/static/backgrounds/{theme}.jpg",
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STARTUP
 # ─────────────────────────────────────────────────────────────────────────────
 def _seed():
     db_manager.setup_database()
     db_manager.seed_admin_user(username="admin", password=config.ADMIN_DEFAULT_PASSWORD)
+    try:
+        background_factory.ensure_backgrounds()
+    except Exception as exc:
+        print(f"[STARTUP] Ambient background generation failed: {exc}")
 
 
 def _start_scheduler():

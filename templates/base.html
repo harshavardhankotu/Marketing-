@@ -7,6 +7,21 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
 <body>
+  <div class="bg-scene theme-{{ bg.theme }}" aria-hidden="true">
+    {% if bg.has_video %}
+    <video class="bg-video" autoplay muted loop playsinline poster="{{ bg.poster_url }}">
+      <source src="{{ bg.video_url }}" type="video/mp4">
+    </video>
+    {% elif bg.poster_url %}
+    <div class="bg-poster" style="background-image:url('{{ bg.poster_url }}')"></div>
+    {% endif %}
+    <div class="bg-overlay"></div>
+    {% if bg.theme == 'kelp' %}<div class="god-rays"></div>
+    {% elif bg.theme == 'train' %}<div class="train-glide"></div>
+    {% elif bg.theme == 'silhouette' %}<div class="fog fog-a"></div><div class="fog fog-b"></div>
+    {% elif bg.theme == 'pavilion' %}<div class="shimmer"></div>{% endif %}
+  </div>
+
   <div class="topbar">
     <div class="brand">AFFILIATE<span style="color:var(--text-dim)">::</span>SUITE <small>v1.0 · ledger console</small></div>
     {% if current_user.is_authenticated %}

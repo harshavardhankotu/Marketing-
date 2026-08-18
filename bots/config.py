@@ -28,13 +28,14 @@ OUTPUT_DIR = os.path.join(DATA_DIR, 'output')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 STATIC_DIR = os.path.join(PROJECT_ROOT, 'static')
 CAMPAIGN_STATIC_DIR = os.path.join(STATIC_DIR, 'campaigns')
+BACKGROUND_DIR = os.path.join(STATIC_DIR, 'backgrounds')
 ASSETS_DIR = os.path.join(PROJECT_ROOT, 'assets')
 
 # Primary SQLite database file (overridable for tests via DB_PATH env var)
 DB_PATH = os.getenv('DB_PATH', os.path.join(DATA_DIR, 'campaigns.db'))
 
 # List of directories that must exist before any subsystem touches disk.
-REQUIRED_DIRS = [DATA_DIR, OUTPUT_DIR, BACKUP_DIR, STATIC_DIR, CAMPAIGN_STATIC_DIR, ASSETS_DIR]
+REQUIRED_DIRS = [DATA_DIR, OUTPUT_DIR, BACKUP_DIR, STATIC_DIR, CAMPAIGN_STATIC_DIR, BACKGROUND_DIR, ASSETS_DIR]
 
 
 def ensure_directories():
@@ -112,6 +113,9 @@ MOCK_SOURCING = os.getenv('MOCK_SOURCING', 'False').strip().lower() in ('1', 'tr
 
 # Timezone for scheduler jobs.
 SCHEDULER_TZ = os.getenv('SCHEDULER_TZ', 'Asia/Kolkata')
+
+# Ambient UI background theme: kelp | pavilion | train | silhouette.
+BACKGROUND_THEME = os.getenv('BACKGROUND_THEME', 'train').strip().lower()
 
 
 def _credential_ok(value):

@@ -37,6 +37,7 @@ bots/job_queue.py               Background queue + dead-letter retry pool
 bots/alert_engine.py            Telegram alerting on trips/blocks/DLQs
 bots/distributor.py             Telegram / X / Instagram adapters (mock-safe)
 bots/scheduler_engine.py        APScheduler (Asia/Kolkata) + SQLite hot backups
+generators/background_factory.py  Procedural ambient UI backdrops (4 themes)
 app.py                          Flask app: auth, /go/ redirects, postback, APIs
 ```
 
@@ -56,6 +57,21 @@ pip install -r requirements.txt
 copy .env.example .env            # then fill in credentials
 python app.py                     # http://127.0.0.1:5000  (admin/admin123)
 ```
+
+## Ambient UI backgrounds
+
+The console ships with four procedural, zero-cost animated backdrops inspired
+by cinematic AI-video aesthetics, rendered offline with Pillow:
+
+- `kelp` — turquoise kelp forest with pulsing golden god-rays
+- `pavilion` — bone-white bio-limestone pavilion with a slow light sweep
+- `train` — 90s-anime golden-hour train carriage, countryside gliding past
+- `silhouette` — double-exposure silhouette with drifting PNW fog & pines
+
+Set `BACKGROUND_THEME` in `.env` or switch live under **Settings → UI Ambient
+Theme**. When MoviePy is installed, `generators/background_factory.py
+--loop --theme <name>` compiles a true seamless-loop MP4; otherwise the CSS
+motion layer animates the still poster (no video required).
 
 ## Tests
 

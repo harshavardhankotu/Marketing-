@@ -47,5 +47,49 @@
       <li>Duplicate transactions are rejected by the idempotency layer.</li>
     </ul>
   </div>
+
+  <div class="panel">
+    <h2>UI Ambient Theme</h2>
+    <div class="field">
+      <label for="bg_theme">Dashboard Background</label>
+      <select id="bg_theme">
+        <option value="kelp">Kelp Forest — underwater god-rays</option>
+        <option value="pavilion">Bio-Limestone Pavilion — bone white</option>
+        <option value="train">90s Anime Train — golden-hour countryside</option>
+        <option value="silhouette">Silhouette — PNW mist & pines</option>
+      </select>
+      <span class="hint">Ambient animated backdrop for the whole console (poster + CSS motion, optional MP4 loop).</span>
+    </div>
+    <button type="button" class="btn primary" onclick="applyBgTheme()">Apply Theme</button>
+    <span id="bg_status" class="hint"></span>
+  </div>
 </div>
+<script>
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+  async function loadBgStatus() {
+    try {
+      const r = await fetch('/api/background/status');
+      const d = await r.json();
+      if (d.status !== 'success') return;
+      document.getElementById('bg_theme').value = d.active;
+    } catch (e) { /* offline / non-fatal */ }
+  }
+  async function applyBgTheme() {
+    const t = document.getElementById('bg_theme').value;
+    const st = document.getElementById('bg_status');
+    try {
+      const r = await fetch('/api/background/' + encodeURIComponent(t), { method: 'POST' });
+      const d = await r.json();
+      st.textContent = esc(d.message || d.status || '');
+      if (d.status === 'success') setTimeout(() => location.reload(), 600);
+    } catch (e) {
+      st.textContent = 'Failed to apply theme.';
+    }
+  }
+  loadBgStatus();
+</script>
 {% endblock %}

@@ -29,14 +29,99 @@ body {
 a { color: var(--cyan); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* ── Ambient background scene ─────────────────────────────────────────────── */
+.bg-scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #1a2436 0%, var(--bg) 55%, #07090e 100%);
+}
+.bg-video, .bg-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.bg-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(7, 9, 14, 0.55) 0%, rgba(7, 9, 14, 0.18) 34%, rgba(7, 9, 14, 0.62) 100%);
+}
+
+/* Theme overlays keep the scene alive without any media cost. */
+.god-rays {
+  position: absolute;
+  inset: -20%;
+  background:
+    repeating-conic-gradient(from 6deg at 50% -18%,
+      rgba(255, 224, 160, 0) 0deg, rgba(255, 224, 160, 0.16) 7deg,
+      rgba(255, 224, 160, 0) 14deg);
+  mix-blend-mode: screen;
+  animation: godray-pulse 11s ease-in-out infinite alternate;
+}
+.train-glide {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, transparent 58%, rgba(122, 170, 96, 0.22) 59%,
+      rgba(96, 142, 78, 0.16) 62%, transparent 66%),
+    linear-gradient(90deg, transparent 0%, rgba(255, 236, 200, 0.10) 50%, transparent 100%);
+  animation: horizon-glide 26s linear infinite;
+}
+.fog {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.55;
+  animation: fog-drift 34s ease-in-out infinite alternate;
+}
+.fog-a { width: 58vw; height: 34vh; left: -12vw; top: 24vh; background: rgba(235, 228, 212, 0.9); }
+.fog-b { width: 52vw; height: 30vh; right: -10vw; top: 54vh; background: rgba(220, 214, 200, 0.85); animation-delay: -17s; }
+.shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 250, 0.10) 46%, transparent 62%);
+  background-size: 220% 100%;
+  animation: shimmer-sweep 13s ease-in-out infinite;
+}
+
+@keyframes godray-pulse {
+  0%   { transform: rotate(-2deg) scale(1);   opacity: 0.45; }
+  100% { transform: rotate(2deg)  scale(1.06); opacity: 0.9; }
+}
+@keyframes horizon-glide {
+  0%   { transform: translateX(-12%); }
+  100% { transform: translateX(12%); }
+}
+@keyframes fog-drift {
+  0%   { transform: translate(-6vw, -2vh) scale(1); }
+  100% { transform: translate(7vw, 3vh)  scale(1.25); }
+}
+@keyframes shimmer-sweep {
+  0%   { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .god-rays, .train-glide, .fog, .shimmer { animation: none !important; }
+}
+
 /* ── Top navigation ───────────────────────────────────────────────────────── */
 .topbar {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 14px 22px;
-  background: var(--bg-panel);
+  background: rgba(18, 22, 31, 0.55);
   border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 .brand { font-weight: 700; letter-spacing: 1px; color: var(--accent); }
 .brand small { color: var(--text-dim); font-weight: 400; }
@@ -49,7 +134,13 @@ a:hover { text-decoration: underline; }
 .nav a.active, .nav a:hover { color: var(--text); background: var(--bg-elevated); }
 
 /* ── Layout ───────────────────────────────────────────────────────────────── */
-.wrap { max-width: 1240px; margin: 22px auto; padding: 0 18px; }
+.wrap {
+  position: relative;
+  z-index: 2;
+  max-width: 1240px;
+  margin: 22px auto;
+  padding: 0 18px;
+}
 .grid { display: grid; gap: 16px; }
 .grid-4 { grid-template-columns: repeat(4, 1fr); }
 .grid-3 { grid-template-columns: repeat(3, 1fr); }
@@ -59,10 +150,12 @@ a:hover { text-decoration: underline; }
 }
 
 .panel {
-  background: var(--bg-panel);
+  background: rgba(18, 22, 31, 0.62);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 18px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 .panel h2 {
   font-size: 13px;
@@ -78,11 +171,13 @@ a:hover { text-decoration: underline; }
 .ticker {
   overflow: hidden;
   white-space: nowrap;
-  background: var(--bg-panel);
+  background: rgba(18, 22, 31, 0.55);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 14px;
   margin-bottom: 18px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .ticker-inner { display: inline-block; animation: scroll 24s linear infinite; }
 @keyframes scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
