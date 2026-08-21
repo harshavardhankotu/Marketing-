@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Affiliate Disclosure{% endblock %}
+
+{% block content %}
+<div class="panel legal">
+  <h2>Affiliate &amp; Advertising Disclosure</h2>
+  <p class="hint">Last updated: {{ updated }}</p>
+
+  <h3>Amazon Associates Statement</h3>
+  <p>
+    <strong>"As an Amazon Associate, I earn from qualifying purchases."</strong>
+    This website participates in the Amazon Associates Program (amazon.in).
+    When you click certain links on this site and make a qualifying purchase,
+    we may earn an advertising commission at
+    <strong>no additional cost to you</strong>. Prices and availability shown are
+    accurate as of the date/time indicated on each deal and are subject to
+    change; the price displayed on Amazon at the time of purchase always prevails.
+  </p>
+  <p class="hint">
+    CERTAIN CONTENT THAT APPEARS ON THIS SITE COMES FROM AMAZON. THIS CONTENT IS
+    PROVIDED "AS IS" AND IS SUBJECT TO CHANGE OR REMOVAL AT ANY TIME.
+  </p>
+
+  <h3>ASCI Compliance</h3>
+  <p>
+    In line with the Advertising Standards Council of India (ASCI) guidelines for
+    influencer and affiliate advertising, every promotional post, caption, image,
+    and video we publish carries a material-connection disclosure:
+  </p>
+  <p><em>*Affiliate link — I may earn a commission at no extra cost to you.</em></p>
+
+  <h3>Our Editorial Promise</h3>
+  <ul>
+    <li>We only promote products genuinely relevant to our audience.</li>
+    <li>We never accept payment for fake reviews, ratings, or engagement.</li>
+    <li>All traffic is organic — no incentivized clicks, no cashback loops, no bots.</li>
+    <li>Deal scores reflect tracked price history, not advertiser pressure.</li>
+  </ul>
+
+  <p class="mt"><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Use</a></p>
+</div>
+{% endblock %}

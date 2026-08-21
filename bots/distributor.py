@@ -109,8 +109,15 @@ def live_post_to_telegram(post_data):
         message_id = msg.get("message_id", _mock_id())
         link = f"https://t.me/{TELEGRAM_CHAT_ID.lstrip('@')}/{message_id}"
         return {"platform": "Telegram", "status": "Success (Live)", "link": link, "message_id": message_id}
-    except requests.RequestException as exc:
-        record_breaker_failure("telegram")
+    except CircuitBreakerOpenException:
+        raise
+    except Exception as exc:
+        # Broad by design: any delivery failure (5xx, network, parse) must
+        # degrade to the organic mock path instead of crashing the sweep.
+        try:
+            record_breaker_failure("telegram")
+        except Exception:
+            pass
         print(f"  [Telegram] Delivery failed: {exc}")
         return mock_post_to_telegram(post_data)
 
@@ -280,8 +287,13 @@ def live_post_to_instagram(post_data):
         record_breaker_success("instagram")
         media_id = publish_resp.json().get("id", _mock_id())
         return {"platform": "Instagram", "status": "Success (Live)", "link": f"https://instagram.com/p/{media_id}"}
-    except requests.RequestException as exc:
-        record_breaker_failure("instagram")
+    except CircuitBreakerOpenException:
+        raise
+    except Exception as exc:
+        try:
+            record_breaker_failure("instagram")
+        except Exception:
+            pass
         print(f"  [Instagram] Delivery failed: {exc}")
         return mock_post_to_instagram(post_data)
 

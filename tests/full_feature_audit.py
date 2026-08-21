@@ -13,6 +13,7 @@ import hmac
 import hashlib
 import sqlite3
 import tempfile
+import re as _re
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -679,6 +680,167 @@ check("share_links unknown campaign 404", resp.status_code == 404)
 # Cross-promo channel card.
 cc_path = render_channel_card(members=620, invite_url="t.me/dealsradar")
 check("channel card PNG rendered", os.path.exists(cc_path))
+
+# ═════════════════════════════════════════════════════════════════════════════
+# M. LEGAL COMPLIANCE PAGES
+# ═════════════════════════════════════════════════════════════════════════════
+section("M. Legal & Compliance Pages")
+anon = app_module.app.test_client()
+
+resp = anon.get("/disclosure")
+disc_body = resp.get_data(as_text=True)
+check("/disclosure public 200", resp.status_code == 200)
+check("Amazon earning statement present", "earn from qualifying purchases" in disc_body)
+check("AS IS content statement present", "AS IS" in disc_body)
+check("price-accuracy disclaimer present",
+      bool(_re.search(r"subject\s+to\s+change", disc_body)))
+check("ASCI disclosure line present", "no extra cost to you" in disc_body)
+
+resp = anon.get("/privacy")
+priv = resp.get_data(as_text=True)
+check("/privacy public 200", resp.status_code == 200)
+check("DPDP notice present", "DPDP" in priv or "Data Protection" in priv)
+check("data collected disclosed (IP/UA)", "IP address" in priv and "user-agent" in priv)
+check("retention stated", "Retention" in priv)
+
+resp = anon.get("/terms")
+terms = resp.get_data(as_text=True)
+check("/terms public 200", resp.status_code == 200)
+check("no price warranty clause", "No Price Warranty" in terms or "prices change" in terms.lower())
+
+footer_page = anon.get("/deals").get_data(as_text=True)
+check("legal links in site footer",
+      all(x in footer_page for x in ('href="/disclosure"', 'href="/privacy"', 'href="/terms"')))
+
+# ═════════════════════════════════════════════════════════════════════════════
+# N. EXTERNAL INTEGRATION SANDBOX (mocked network — no credentials needed)
+# ═════════════════════════════════════════════════════════════════════════════
+section("N. Integration Sandbox (mocked network)")
+from unittest import mock  # noqa: E402
+
+import bots.distributor as distributor  # noqa: E402
+
+
+class _FakeResp:
+    def __init__(self, status=200, payload=None):
+        self.status_code = status
+        self._payload = payload or {}
+        self.text = json.dumps(self._payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests as _rq
+            raise _rq.HTTPError(f"{self.status_code}")
+
+
+# ── Telegram live path: success ──────────────────────────────────────────────
+quota_manager.reset_quota("telegram")
+quota_manager.reset_breaker("telegram")
+with mock.patch.object(distributor, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
+     mock.patch.object(distributor, "TELEGRAM_CHAT_ID", "@testchan"), \
+     mock.patch.object(distributor.requests, "post", return_value=_FakeResp(200, {"ok": True, "result": {"message_id": 4242}})):
+    out = distributor.live_post_to_telegram({"title": "T", "caption": "C", "affiliate_link": "https://www.amazon.in/dp/X"})
+check("telegram live success path", out.get("status") == "Success (Live)" and out.get("message_id") == 4242)
+
+# ── Telegram live path: 5xx trips breaker then degrades to mock ─────────────
+quota_manager.reset_quota("telegram")
+with mock.patch.object(distributor, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
+     mock.patch.object(distributor, "TELEGRAM_CHAT_ID", "@testchan"), \
+     mock.patch.object(distributor.requests, "post", return_value=_FakeResp(503, {})):
+    out = distributor.live_post_to_telegram({"title": "T", "caption": "C"})
+check("telegram 5xx falls back to mock", out.get("status") == "Success (Mock)")
+check("telegram breaker recorded failure", quota_manager.get_breaker_state("telegram")["failure_count"] >= 1)
+quota_manager.reset_breaker("telegram")
+quota_manager.reset_quota("telegram")
+
+# ── Telegram growth API sandbox ──────────────────────────────────────────────
+import bots.growth_tracker as gt  # noqa: E402
+gt.reset_for_test = None
+with mock.patch.object(gt, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
+     mock.patch.object(gt, "TELEGRAM_CHAT_ID", "@testchan"), \
+     mock.patch.object(gt.requests, "post", return_value=_FakeResp(200, {"ok": True, "result": 4321})):
+    count, err = gt.fetch_member_count()
+    snap = gt.capture_snapshot()
+check("growth bot api success path", count == 4321 and err is None and snap.get("count") == 4321)
+with mock.patch.object(gt, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
+     mock.patch.object(gt, "TELEGRAM_CHAT_ID", "@testchan"), \
+     mock.patch.object(gt.requests, "post", return_value=_FakeResp(200, {"ok": False, "description": "chat not found"})):
+    count, err = gt.fetch_member_count()
+check("growth bot api handles api error", count is None and "api_error" in (err or ""))
+
+# ── Instagram Graph two-step publish sandbox ────────────────────────────────
+quota_manager.reset_quota("instagram")
+quota_manager.reset_breaker("instagram")
+card_file = render_deal_card({"id": "IGTEST", "title": "IG Test", "price": 100, "mrp": 150,
+                              "discount_pct": 33, "badge": "", "is_lowest_ever": False})
+with mock.patch.object(distributor, "INSTAGRAM_ACCOUNT_ID", "1789FAKE"), \
+     mock.patch.object(distributor, "META_ACCESS_TOKEN", "FAKE_TOKEN"), \
+     mock.patch.object(distributor, "_public_image_url", return_value="https://example.com/x.jpg"), \
+     mock.patch.object(distributor.requests, "post", side_effect=[
+         _FakeResp(200, {"id": "CONTAINER_1"}),
+         _FakeResp(200, {"id": "IG_MEDIA_99"}),
+     ]):
+    out = distributor.live_post_to_instagram({"title": "T", "caption": "C", "graphic_path": card_file})
+check("instagram container+publish flow", out.get("status") == "Success (Live)" and "IG_MEDIA_99" in out.get("link", ""))
+quota_manager.reset_breaker("instagram")
+quota_manager.reset_quota("instagram")
+
+# ── Twitter/X no-creds -> Playwright disabled -> organic mock ────────────────
+out = distributor.live_post_to_twitter({"title": "T", "caption": "C"})
+check("twitter degrades to organic mock", out.get("status") == "Success (Mock)")
+
+# ── PA-API signature shape (offline crypto check with sandbox credentials) ──
+import importlib  # noqa: E402
+spec = importlib.util.spec_from_file_location(
+    "pscraper", os.path.join(PROJECT_ROOT, "scrapers", "product_scraper.py"))
+pscraper = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(pscraper)
+    with mock.patch.object(pscraper, "AMAZON_PAAPI_ACCESS_KEY", "AKIAFAKEKEY"), \
+         mock.patch.object(pscraper, "AMAZON_PAAPI_SECRET_KEY", "fake-secret-key"):
+        auth, amz_date = pscraper._sign_request({"Operation": "SearchItems", "Keywords": "x"})
+    ok_shape = bool(_re.match(
+        r"AWS4-HMAC-SHA256 Credential=AKIAFAKEKEY/\d{8}/eu-west-1/ProductAdvertisingAPI/com/aws4_request, "
+        r"SignedHeaders=host;x-amz-date, Signature=[0-9a-f]{64}$", auth))
+    check("PA-API SigV4 header shape valid", ok_shape, auth[:80])
+except Exception as exc:
+    check("PA-API SigV4 header shape valid", False, str(exc))
+
+# ── RSS parsing sandbox (offline XML via mocked transport) ───────────────────
+RSS_XML = b"""<?xml version="1.0"?>
+<rss version="2.0"><channel>
+<item><title>Deal One</title><link>https://www.amazon.in/dp/B0AAAAAAA1?tag=x</link>
+<description>Price: \xe2\x82\xb9 1,299.00</description></item>
+<item><title>Deal Two</title><link>https://www.amazon.in/gp/product/B0BBBBBBB2</link></item>
+</channel></rss>"""
+
+
+class _FakeRSSResp:
+    content = RSS_XML
+
+    def raise_for_status(self):
+        pass
+
+
+try:
+    # product_scraper imports requests lazily inside _fetch_rss_deals, so
+    # patch the shared 'requests' module itself.
+    with mock.patch("requests.get", return_value=_FakeRSSResp()):
+        deals = pscraper._fetch_rss_deals("http://fake/feed", limit=5)
+    asins = [d["asin"] for d in deals]
+    check("RSS parser extracts ASINs offline", len(deals) == 2 and asins == ["B0AAAAAAA1", "B0BBBBBBB2"])
+    check("RSS price regex parses rupee amounts", deals[0]["price"] == 1299.0)
+except Exception as exc:
+    check("RSS parser extracts ASINs offline", False, str(exc))
+
+# ── Gemini absent -> template fallback keeps ASCI guard ──────────────────────
+from generators.ai_copywriter import generate_multilingual_copy  # noqa: E402
+copies = generate_multilingual_copy({"id": "G1", "title": "Widget", "price": 500, "discount": 10})
+check("copywriter offline fallback trilingual", all(k in copies for k in ("en", "hi", "ta")))
+check("fallback copy carries ASCI guard", "no extra cost" in copies["en"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY

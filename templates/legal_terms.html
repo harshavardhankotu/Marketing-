@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Terms of Use{% endblock %}
+
+{% block content %}
+<div class="panel legal">
+  <h2>Terms of Use</h2>
+  <p class="hint">Last updated: {{ updated }}</p>
+
+  <h3>1. Nature of This Service</h3>
+  <p>This website aggregates publicly observable product prices, presents independently-tracked deal information and opinion, and links to amazon.in through Amazon Associates affiliate links. We are an independent publisher — not owned by, endorsed by, or operating on behalf of Amazon or any merchant.</p>
+
+  <h3>2. No Price Warranty</h3>
+  <p>Product prices, discounts and availability change frequently and without notice on merchant platforms. Figures shown here are accurate only as of the timestamp indicated with each deal. The price displayed at the merchant's checkout is final and authoritative; we accept no liability for discrepancies, expired offers, or purchase decisions made from this site's content.</p>
+
+  <h3>3. Affiliate Relationship</h3>
+  <p>Links marked as affiliate may earn us a commission on qualifying purchases at no extra cost to you. See the full <a href="/disclosure">Affiliate Disclosure</a>. This never inflates your price.</p>
+
+  <h3>4. Acceptable Use</h3>
+  <ul>
+    <li>Do not scrape, hammer, or attempt to bypass rate limits on public endpoints.</li>
+    <li>The private dashboard is for authorised operators only; abuse of authentication endpoints is logged and blocked.</li>
+    <li>Automated conversion webhooks must present a valid HMAC signature; anything else is rejected and recorded.</li>
+  </ul>
+
+  <h3>5. Intellectual Property</h3>
+  <p>Product names, trademarks and images belong to their respective owners and are used for identification purposes in an editorial context. "Amazon" and related marks are trademarks of Amazon.com, Inc. or its affiliates. Deal-card artwork and site design are ours.</p>
+
+  <h3>6. Limitation of Liability &amp; Law</h3>
+  <p>The service is provided "as is", without warranties of any kind. To the maximum extent permitted by law, we are not liable for indirect or consequential losses arising from use of this site. These terms are governed by the laws of India; courts at the operator's principal place of business have exclusive jurisdiction.</p>
+
+  <h3>7. Changes</h3>
+  <p>We may update these terms as the service evolves; the revision date above changes when that happens.</p>
+
+  <p class="mt"><a href="/disclosure">Affiliate Disclosure</a> · <a href="/privacy">Privacy Policy</a></p>
+</div>
+{% endblock %}

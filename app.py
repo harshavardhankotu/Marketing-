@@ -820,6 +820,28 @@ def sitemap_xml():
     return Response("\n".join(body), mimetype="application/xml")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LEGAL PAGES — Amazon Associates participation requirements + India DPDP.
+# Public, indexable, linked from every page footer.
+# ─────────────────────────────────────────────────────────────────────────────
+LEGAL_UPDATED = datetime.utcnow().strftime("%d %B %Y")
+
+
+@app.route("/disclosure")
+def legal_disclosure():
+    return render_template("legal_disclosure.html", updated=LEGAL_UPDATED)
+
+
+@app.route("/privacy")
+def legal_privacy():
+    return render_template("legal_privacy.html", updated=LEGAL_UPDATED)
+
+
+@app.route("/terms")
+def legal_terms():
+    return render_template("legal_terms.html", updated=LEGAL_UPDATED)
+
+
 @app.route("/robots.txt")
 def robots_txt():
     base = _public_base_url().rstrip("/")

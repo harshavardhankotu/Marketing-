@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Privacy Policy{% endblock %}
+
+{% block content %}
+<div class="panel legal">
+  <h2>Privacy Policy</h2>
+  <p class="hint">Last updated: {{ updated }} · Published under India's Digital Personal Data Protection Act, 2023 (DPDP) principles of notice, purpose limitation and data minimisation.</p>
+
+  <h3>1. What We Collect</h3>
+  <ul>
+    <li><strong>Click telemetry:</strong> when a deal link is used, we record the product identifier, referral channel label, user-agent string and IP address — solely to filter bot traffic, prevent fraud, and count human clicks.</li>
+    <li><strong>Session cookie:</strong> a single strictly-necessary cookie (HttpOnly) that keeps operators logged into the private dashboard. It is not used for advertising or cross-site tracking.</li>
+    <li><strong>Conversion webhooks:</strong> transaction identifiers and amounts sent by our affiliate network to attribute commissions. No card numbers or payment credentials ever touch this site.</li>
+    <li><strong>Nothing else.</strong> No accounts for visitors, no email capture, no ad-tech trackers, no sale of data — ever.</li>
+  </ul>
+
+  <h3>2. Why We Process It</h3>
+  <p>Purpose limitation applies: click records exist only to (a) exclude crawler traffic from analytics, (b) attribute commissions to the correct channel, and (c) secure the service against abuse. Aggregated counts may appear on the dashboard; raw IP addresses are never published or shared.</p>
+
+  <h3>3. Retention</h3>
+  <p>Click and conversion records are kept no longer than needed for attribution and audit (currently up to 24 months), after which they are deleted or irreversibly aggregated. Database backups roll off after 7 days.</p>
+
+  <h3>4. Third Parties</h3>
+  <ul>
+    <li><strong>Amazon (amazon.in):</strong> deal links take you to Amazon, where Amazon's own privacy policy governs your visit.</li>
+    <li><strong>Telegram / X / Instagram:</strong> we publish posts on our own channels there; interacting with those platforms is governed by their respective policies.</li>
+  </ul>
+
+  <h3>5. Your Rights</h3>
+  <p>You may ask what data relates to you, request correction, or request erasure. Because we collect almost nothing about visitors (an IP + user-agent per anonymous click), requests are best sent via the contact address published on this site's channel bio, and we will respond within a reasonable time as required under the DPDP Act.</p>
+
+  <h3>6. Security</h3>
+  <p>Data is stored in an access-controlled SQLite database with encrypted (HTTPS) transport in production, HMAC-signed conversion webhooks, rate-limited endpoints, and automated least-privilege backups.</p>
+
+  <p class="mt"><a href="/disclosure">Affiliate Disclosure</a> · <a href="/terms">Terms of Use</a></p>
+</div>
+{% endblock %}
