@@ -251,6 +251,7 @@ def _migrate_schema(cursor):
         ("campaigns", "mrp", "REAL"),
         ("campaigns", "deal_score", "REAL DEFAULT 0"),
         ("campaigns", "lowest_ever", "INTEGER DEFAULT 0"),
+        ("campaigns", "variant", "TEXT"),
         ("affiliate_clicks", "session_id", "TEXT"),
     ]
     for table, column, col_type in _ALTER_STATEMENTS:
@@ -358,8 +359,9 @@ def save_campaign(campaign_data, sector="electronics"):
             """
             INSERT INTO campaigns
                 (product_id, title, sector, target_url, price, discount, commission,
-                 caption, graphic_path, mrp, deal_score, lowest_ever, status, publish_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
+                 caption, graphic_path, mrp, deal_score, lowest_ever, variant,
+                 status, publish_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
             """,
             (
                 campaign_data.get("id") or campaign_data.get("product_id"),
@@ -374,6 +376,7 @@ def save_campaign(campaign_data, sector="electronics"):
                 float(campaign_data["mrp"]) if campaign_data.get("mrp") else None,
                 float(campaign_data.get("deal_score", 0) or 0),
                 1 if campaign_data.get("lowest_ever") else 0,
+                campaign_data.get("variant") if campaign_data.get("variant") in ("A", "B") else None,
                 publish_at,
             ),
         )
@@ -449,6 +452,55 @@ def count_campaigns():
     conn = _connection()
     try:
         return conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def has_recent_campaign(product_id, days=7):
+    """
+    True when a campaign for this product was already created within the last
+    ``days`` days — the channel-spam guard that stops every sweep re-posting
+    the same ASIN. Re-alerts bypass this when the price dropped further.
+    """
+    if not product_id:
+        return False
+    conn = _connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM campaigns
+            WHERE product_id = ?
+              AND status IN ('pending_approval', 'published')
+              AND created_at >= datetime('now', ?)
+            """,
+            (product_id, f"-{int(days)} days"),
+        ).fetchone()
+        return bool(row[0])
+    finally:
+        conn.close()
+
+
+def get_lowest_recorded_price(product_id):
+    """Minimum price ever observed for a product, or None."""
+    stats = get_price_stats(product_id)
+    return stats["min"] if stats else None
+
+
+def count_posts_today():
+    """
+    Distinct campaigns distributed today (UTC date) — the daily posting cap
+    basis so the auto-publish sweep can never flood the channel.
+    """
+    conn = _connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT campaign_id) FROM distribution_logs
+            WHERE date(timestamp) = date('now')
+              AND status LIKE 'Success%'
+            """
+        ).fetchone()
+        return int(row[0])
     finally:
         conn.close()
 

@@ -129,6 +129,12 @@
     <div class="panel">
       <h2>Operator Alerts</h2>
       <div id="alerts-box"></div>
+      <details class="mt">
+        <summary class="hint">Import commission report (Amazon sends no postbacks)</summary>
+        <textarea id="conv-json" rows="6" placeholder='{"rows":[{"transaction_id":"402-xxx","product_id":"B0XXXX","session_id":"","sale_amount":2999,"commission_amount":89.97}]}'></textarea>
+        <button class="btn mt" id="conv-import">Import Rows</button>
+        <div class="hint mt" id="conv-result"></div>
+      </details>
     </div>
   </div>
 
@@ -339,6 +345,22 @@ document.getElementById('growth-manual-btn').addEventListener('click', async () 
     body: JSON.stringify({ count: parseInt(val, 10) })
   });
   loadGrowth();
+});
+
+document.getElementById('conv-import').addEventListener('click', async () => {
+  const outEl = document.getElementById('conv-result');
+  try {
+    const payload = JSON.parse(document.getElementById('conv-json').value || '{}');
+    const res = await fetch('/api/conversions/import', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.status !== 'success') { outEl.textContent = '✘ ' + (data.message || 'failed'); return; }
+    outEl.textContent = `✔ imported ${data.imported}, duplicates ${data.skipped_duplicates}, failed ${data.failed}`;
+    loadPerformance(); loadRevenueClock();
+  } catch (e) { outEl.textContent = '✘ Invalid JSON.'; }
 });
 
 loadSectors();

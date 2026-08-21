@@ -537,9 +537,7 @@ def api_sectors():
 def api_run_pipeline():
     try:
         from scrapers.product_scraper import fetch_active_campaigns, SECTOR_CONFIG
-        from generators.ai_copywriter import generate_deal_post
-        from generators.deal_card import render_deal_card
-        from bots.deal_scorer import score_deal, rank_deals
+        from bots.compose_service import compose_campaigns
 
         data = request.json or {}
         sector = data.get("sector", "electronics")
@@ -547,25 +545,17 @@ def api_run_pipeline():
             return jsonify({"status": "error", "message": f"Invalid sector '{sector}'"}), 400
 
         products = fetch_active_campaigns(sector)
-        # Score deal quality, then persist best deals first.
-        products = [score_deal(p) for p in products]
-        products = rank_deals(products)
+        result = compose_campaigns(products, sector)
 
-        saved = 0
-        for product in products:
-            product["sector"] = sector
-            product["caption"] = generate_deal_post(product)
-            product["graphic_path"] = render_deal_card(product)
-            db_manager.save_campaign(product, sector=sector)
-            saved += 1
-
-        top_badge = products[0].get("badge", "") if products else ""
         return jsonify({
             "status": "success",
             "sector": sector,
-            "campaigns_created": saved,
-            "top_badge": top_badge,
-            "top_score": products[0].get("deal_score", 0) if products else 0,
+            "campaigns_created": result["saved"],
+            "skipped_low_score": result["low_score_skipped"],
+            "skipped_duplicate": result["duplicate_skipped"],
+            "variants": result["variants"],
+            "top_badge": result["top_badge"],
+            "top_score": result["top_score"],
             "run_at": datetime.utcnow().isoformat(),
         })
     except Exception as exc:
@@ -782,7 +772,12 @@ def deal_detail(campaign_id):
     if not row:
         return render_template("deal_detail.html", deal=None, json_ld=None, base_url=_public_base_url()), 404
     deal = dict(row)
-    go_url = f"/go/{deal['product_id']}?url={deal['target_url']}&title={deal['title']}&sector={deal['sector']}&channel=site"
+    variant = deal.get("variant") if deal.get("variant") in ("A", "B") else ""
+    go_url = (
+        f"/go/{deal['product_id']}?url={deal['target_url']}"
+        f"&title={deal['title']}&sector={deal['sector']}&channel=site"
+        + (f"&var={variant}" if variant else "")
+    )
     image_url = f"{_public_base_url()}{deal['graphic_path']}" if deal.get("graphic_path") else ""
     json_ld = {
         "@context": "https://schema.org",
@@ -947,12 +942,14 @@ def api_share_links():
         title = campaign.get("title") or ""
 
         links = []
+        variant = campaign.get("variant") if campaign.get("variant") in ("A", "B") else ""
         for channel in [c.strip() for c in channels_raw.split(",") if c.strip()][:12]:
             qs = urllib.parse.urlencode({
                 "url": target,
                 "title": title,
                 "sector": campaign.get("sector") or "",
                 "channel": channel,
+                **({"var": variant} if variant else {}),
             })
             links.append({
                 "channel": channel,
@@ -966,6 +963,70 @@ def api_share_links():
             "caption": campaign.get("caption") or "",
             "card_image": campaign.get("graphic_path") or "",
             "links": links,
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/conversions/import", methods=["POST"])
+@login_required
+@limiter.limit("30 per minute")
+def api_conversions_import():
+    """
+    Revenue reconciliation for DIRECT Amazon Associates (which pushes no
+    webhooks). The operator pastes rows from the Associates commission
+    report (or any network export); each row flows through the same
+    idempotent conversion path as live postbacks.
+
+    Body: {"rows": [{"transaction_id","product_id","session_id"?,
+                     "sale_amount","commission_amount"}], "source": "csv"}
+    """
+    if current_user.role != "admin":
+        return jsonify({"status": "error", "message": "Admin role required"}), 403
+
+    try:
+        import affiliate_tracker as _tracker
+        from bots.idempotency import check_and_mark
+
+        data = request.json or {}
+        rows = data.get("rows")
+        if not isinstance(rows, list) or not rows:
+            return jsonify({"status": "error", "message": "rows[] required"}), 400
+        if len(rows) > 500:
+            return jsonify({"status": "error", "message": "Max 500 rows per batch"}), 400
+
+        imported = skipped = failed = 0
+        errors = []
+        for i, row in enumerate(rows):
+            txn = str(row.get("transaction_id") or "").strip()
+            if not txn:
+                failed += 1
+                errors.append(f"row {i}: transaction_id missing")
+                continue
+            try:
+                if not check_and_mark(txn, event_type="conversion"):
+                    skipped += 1
+                    continue
+                _tracker.record_conversion(
+                    transaction_id=txn,
+                    product_id=str(row.get("product_id") or ""),
+                    session_id=str(row.get("session_id") or ""),
+                    sale_amount=float(row.get("sale_amount", 0) or 0),
+                    commission_amount=float(row.get("commission_amount", 0) or 0),
+                )
+                imported += 1
+            except Exception as exc:
+                from bots.idempotency import release
+                release(txn)
+                failed += 1
+                errors.append(f"row {i}: {exc}")
+
+        return jsonify({
+            "status": "success",
+            "imported": imported,
+            "skipped_duplicates": skipped,
+            "failed": failed,
+            "errors": errors[:20],
         })
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 500

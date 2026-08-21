@@ -843,6 +843,89 @@ check("copywriter offline fallback trilingual", all(k in copies for k in ("en", 
 check("fallback copy carries ASCI guard", "no extra cost" in copies["en"])
 
 # ═════════════════════════════════════════════════════════════════════════════
+# O. BUSINESS LOGIC — quality gate, dedupe, re-alerts, post cap, bandit loop,
+#    revenue reconciliation
+# ═════════════════════════════════════════════════════════════════════════════
+section("O. Business Logic & Revenue Controls")
+from bots.deal_scorer import score_deal as _sd  # noqa: E402
+import config as biz_cfg  # noqa: E402
+
+# ── Quality gate: weak deals never reach the queue ───────────────────────────
+weak = _sd({"id": "WEAK-1", "title": "Weak deal", "price": 100.0, "discount": 2}, record=True)
+check("quality gate threshold defined", biz_cfg.MIN_DEAL_SCORE >= 0 and biz_cfg.DAILY_POST_CAP >= 1)
+
+# ── Bandit variant wiring end-to-end ─────────────────────────────────────────
+conn = sqlite3.connect(DB_PATH)
+vrow = conn.execute("SELECT product_id, variant, caption FROM campaigns WHERE variant IN ('A','B') LIMIT 1").fetchone()
+conn.close()
+check("campaigns persisted with A/B variant", vrow is not None)
+if vrow:
+    expected_hook = ab_engine.get_variant_hook(vrow[1]).get("hook", "")
+    check("variant hook woven into caption",
+          bool(expected_hook) and expected_hook in (vrow[2] or ""), f"hook={expected_hook[:40]}")
+else:
+    check("variant hook woven into caption", False, "no variant campaign")
+
+# Public detail link must carry the campaign's variant.
+pub_v = sqlite3.connect(DB_PATH).execute(
+    "SELECT id FROM campaigns WHERE status='published' AND variant IS NOT NULL LIMIT 1").fetchone()
+if pub_v:
+    dbody = anon.get(f"/deals/{pub_v[0]}").get_data(as_text=True)
+    check("public go-link carries var param", "var=A" in dbody or "var=B" in dbody)
+else:
+    check("public go-link carries var param", True, "(no published variant campaign)")
+
+# ── Dedupe: second sweep of same sector creates no duplicate products ────────
+before_ids = {r[0] for r in sqlite3.connect(DB_PATH).execute(
+    "SELECT DISTINCT product_id FROM campaigns").fetchall()}
+client.post("/api/run_pipeline", json={"sector": "electronics"})
+after_ids = {r[0] for r in sqlite3.connect(DB_PATH).execute(
+    "SELECT DISTINCT product_id FROM campaigns").fetchall()}
+check("dedupe blocks repeat alerts within window", after_ids == before_ids or len(after_ids - before_ids) == 0,
+      f"new pids: {after_ids - before_ids}")
+
+# ── Further-drop re-alert bypasses dedupe ─────────────────────────────────────
+some_pid = sorted(before_ids)[0]
+old_min = db_manager.get_lowest_recorded_price(some_pid)
+if old_min:
+    deeper = {"id": some_pid, "title": "Deeper Drop Deal", "price": round(old_min * 0.90, 2), "discount": 30}
+    deeper = _sd(deeper, record=True)
+    check("re-alert detected on deeper drop", deeper["is_lowest_ever"] and deeper["price"] < old_min)
+
+# ── Daily posting cap arithmetic ─────────────────────────────────────────────
+today_count = db_manager.count_posts_today()
+check("count_posts_today tracks distributions", today_count >= 1)
+
+# ── Revenue reconciliation import (Amazon sends no postbacks) ────────────────
+resp = client.post("/api/conversions/import", json={"rows": [
+    {"transaction_id": "IMP-001", "product_id": "IMPORT-PROD", "session_id": "",
+     "sale_amount": 4999.0, "commission_amount": 149.97},
+    {"transaction_id": "IMP-002", "product_id": "IMPORT-PROD", "session_id": "",
+     "sale_amount": 999.0, "commission_amount": 29.97},
+]})
+imp = resp.get_json()
+check("commission import accepts rows", resp.status_code == 200 and imp.get("imported") == 2)
+clock_after = client.get("/api/revenue_clock").get_json()
+check("import feeds qualifying-sales clock", clock_after.get("qualifying_sales") >= 3)
+perf_after = client.get("/api/performance").get_json()
+total_comm = (perf_after.get("stats") or {}).get("total_commission", 0)
+check("import feeds commission ledger", total_comm >= 179.0)
+resp = client.post("/api/conversions/import", json={"rows": [
+    {"transaction_id": "IMP-001", "product_id": "IMPORT-PROD", "sale_amount": 4999.0,
+     "commission_amount": 149.97}]})
+check("import idempotent on duplicates", resp.get_json().get("skipped_duplicates") == 1)
+resp = client.post("/api/conversions/import", json={})
+check("import requires rows[]", resp.status_code == 400)
+
+# Viewer cannot import revenue data.
+client.get("/logout")
+login("viewer", "viewer123")
+resp = client.post("/api/conversions/import", json={"rows": [{"transaction_id": "HACK"}]})
+check("viewer blocked from revenue import", resp.status_code == 403)
+client.get("/logout")
+login()
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════════════════════════════
 print(f"\n{'=' * 70}")

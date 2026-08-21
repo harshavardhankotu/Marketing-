@@ -117,6 +117,20 @@ SCHEDULER_TZ = os.getenv('SCHEDULER_TZ', 'Asia/Kolkata')
 # Ambient UI background theme: kelp | pavilion | train | silhouette.
 BACKGROUND_THEME = os.getenv('BACKGROUND_THEME', 'train').strip().lower()
 
+# ── BUSINESS RULES (channel quality + revenue pacing) ────────────────────────
+# Deals below this score are never saved/posted — a deals channel lives on
+# curation quality, not volume.
+MIN_DEAL_SCORE = float(os.getenv('MIN_DEAL_SCORE', '35'))
+
+# Maximum campaigns distributed per UTC day across all channels.
+DAILY_POST_CAP = int(os.getenv('DAILY_POST_CAP', '8'))
+
+# Skip re-posting a product already alerted within this many days…
+DEDUPE_DAYS = int(os.getenv('DEDUPE_DAYS', '7'))
+# …unless its price dropped at least this % below the previously recorded
+# minimum (a genuine "further drop" re-alert worth sending).
+REALERT_DROP_PCT = float(os.getenv('REALERT_DROP_PCT', '2.0'))
+
 
 def _credential_ok(value):
     """True when a credential was actually supplied (not a placeholder)."""

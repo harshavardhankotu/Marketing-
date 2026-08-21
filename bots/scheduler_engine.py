@@ -40,22 +40,33 @@ _STARTED = False
 # ─────────────────────────────────────────────────────────────────────────────
 def content_sweep(sector=None):
     """
-    Source products for a vertical, score deal quality, compose proven
-    deal-format captions + forwardable deal cards, and persist them as
-    pending campaigns ranked best-first.
+    Business-driven content pipeline:
+
+        1. Source sectors ordered by EV ranking (highest expected value first).
+        2. Delegate composition to bots/compose_service.py — the single source
+           of truth for the quality gate, de-duplication, further-drop
+           re-alerts, A/B bandit wiring and persistence.
     """
-    from scrapers.product_scraper import fetch_active_campaigns
-    from generators.ai_copywriter import generate_deal_post
-    from generators.deal_card import render_deal_card
-    from bots.deal_scorer import score_deal, rank_deals
-    from db_manager import save_campaign
+    from scrapers.product_scraper import fetch_active_campaigns, SECTOR_CONFIG
+    from bots.compose_service import compose_campaigns
 
     if sector is None:
-        sectors = ["electronics", "home_kitchen"]
+        # Spend sourcing effort where expected value is highest.
+        try:
+            import revenue_ranker
+            ev_order = [r["sector"] for r in revenue_ranker.rank_verticals()]
+            sectors = [s for s in ev_order if s in SECTOR_CONFIG]
+            for known in SECTOR_CONFIG:
+                if known not in sectors:
+                    sectors.append(known)
+        except Exception:
+            sectors = list(SECTOR_CONFIG.keys())
     else:
         sectors = [sector]
 
     total_saved = 0
+    skipped = {"low_score": 0, "duplicate": 0}
+
     for sec in sectors:
         print(f"[SCHEDULER] Content sweep -> sector: {sec}")
         try:
@@ -64,57 +75,55 @@ def content_sweep(sector=None):
             print(f"[SCHEDULER] Sourcing failed for {sec}: {exc}")
             continue
 
-        # Score first, then persist best deals first (hot deals win the queue).
-        products = [score_deal(p) for p in products]
-        products = rank_deals(products)
+        result = compose_campaigns(products, sec)
+        total_saved += result["saved"]
+        skipped["low_score"] += result["low_score_skipped"]
+        skipped["duplicate"] += result["duplicate_skipped"]
 
-        for idx, product in enumerate(products):
-            try:
-                product["sector"] = sec
-                product["commission"] = product.get("commission", 0.03)
-                product["caption"] = generate_deal_post(product)
-                product["graphic_path"] = render_deal_card(product)
-
-                save_campaign(product, sector=sec)
-                total_saved += 1
-                badge = product.get("badge") or "scored"
-                print(f"[SCHEDULER] Saved [{badge} {product.get('deal_score', 0)}] {product.get('title', '')[:50]}")
-            except Exception as exc:
-                print(f"[SCHEDULER] Failed to compose product {idx} in {sec}: {exc}")
-
-    print(f"[SCHEDULER] Content sweep complete. {total_saved} campaigns persisted.")
+    print(f"[SCHEDULER] Content sweep complete. {total_saved} saved "
+          f"(skipped: {skipped['low_score']} low-score, {skipped['duplicate']} duplicate).")
     return total_saved
 
 
 def auto_publish_sweep():
     """
-    Publish every pending campaign whose publish_at timestamp has arrived.
+    Publish every pending campaign whose publish_at timestamp has arrived,
+    respecting the daily posting cap so the channel never gets flooded
+    (audiences churn from volume; they stay for curated wins).
     """
-    from db_manager import _connection
+    import config
+    from db_manager import _connection, count_posts_today
 
     conn = _connection()
     due = []
     try:
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         rows = conn.execute(
-            "SELECT id FROM campaigns WHERE status = 'pending_approval' AND publish_at <= ?",
+            "SELECT id FROM campaigns WHERE status = 'pending_approval' AND publish_at <= ? "
+            "ORDER BY deal_score DESC",
             (now,),
         ).fetchall()
         due = [r[0] for r in rows]
     finally:
         conn.close()
 
+    remaining_today = max(config.DAILY_POST_CAP - count_posts_today(), 0)
+    batch = due[:remaining_today]
+    if len(due) > len(batch):
+        print(f"[SCHEDULER] Daily post cap reached ({config.DAILY_POST_CAP}) — "
+              f"{len(due) - len(batch)} campaign(s) held for tomorrow.")
+
     from distributor import distribute_campaign
 
     published = 0
-    for campaign_id in due:
+    for campaign_id in batch:
         try:
             if distribute_campaign(campaign_id):
                 published += 1
         except Exception as exc:
             print(f"[SCHEDULER] Auto-publish failed for campaign {campaign_id}: {exc}")
 
-    print(f"[SCHEDULER] Auto-publish sweep published {published}/{len(due)} due campaigns.")
+    print(f"[SCHEDULER] Auto-publish sweep published {published}/{len(batch)} due campaigns.")
     return published
 
 
