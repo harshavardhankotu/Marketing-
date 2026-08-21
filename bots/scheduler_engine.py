@@ -149,6 +149,17 @@ def retry_sweep(max_jobs=20):
     return processed
 
 
+def growth_snapshot():
+    """
+    Daily audience telemetry: capture the Telegram member count (free Bot API)
+    so the growth curve can be correlated with cross-promos and campaigns.
+    """
+    from growth_tracker import capture_snapshot
+
+    result = capture_snapshot()
+    return result.get("count")
+
+
 def hot_backup():
     """
     Zero-cost hot backup using SQLite's online backup API.
@@ -316,6 +327,13 @@ def start(app=None):
         IntervalTrigger(minutes=5),
         id="retry_sweep",
         name="Retry queue sweep",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _instrumented("growth_snapshot", growth_snapshot),
+        CronTrigger(hour=9, minute=0, timezone=SCHEDULER_TZ),
+        id="growth_snapshot",
+        name="Daily channel growth snapshot",
         replace_existing=True,
     )
     scheduler.add_job(

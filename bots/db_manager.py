@@ -217,6 +217,16 @@ SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS idx_price_history_product
         ON price_history (product_id, seen_at)
     """,
+    # 15. Channel growth snapshots — free audience telemetry (Bot API counts)
+    """
+    CREATE TABLE IF NOT EXISTS growth_snapshots (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel       TEXT DEFAULT 'telegram',
+        member_count  INTEGER,
+        source        TEXT DEFAULT 'bot_api',
+        captured_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 ]
 
 # Seed rows for system_settings (spec section B item 5)
@@ -489,6 +499,76 @@ def get_price_stats(product_id):
         }
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHANNEL GROWTH SNAPSHOTS — audience telemetry
+# ─────────────────────────────────────────────────────────────────────────────
+def record_growth_snapshot(member_count, channel="telegram", source="bot_api"):
+    """Store one member-count observation. Returns the row id."""
+    conn = _connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO growth_snapshots (channel, member_count, source) VALUES (?, ?, ?)",
+            (channel, int(member_count), source),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_growth_history(channel="telegram", limit=60):
+    """Return recent snapshots oldest-first: [{member_count, captured_at}, ...]."""
+    conn = _connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT member_count, captured_at FROM growth_snapshots
+            WHERE channel = ? ORDER BY id DESC LIMIT ?
+            """,
+            (channel, limit),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+    finally:
+        conn.close()
+
+
+def get_growth_summary(channel="telegram"):
+    """Current count + 1d/7d deltas computed from snapshots (None when empty)."""
+    history = get_growth_history(channel, limit=60)
+    if not history:
+        return None
+    current = history[-1]["member_count"]
+
+    def _delta(days_back):
+        target = len(history) - 1 - days_back * _snapshots_per_day()
+        if days_back == 1:
+            # Compare against the previous snapshot taken on an earlier day.
+            for i in range(len(history) - 2, -1, -1):
+                prev_date = str(history[i]["captured_at"])[:10]
+                curr_date = str(history[-1]["captured_at"])[:10]
+                if prev_date != curr_date:
+                    return current - history[i]["member_count"]
+            return 0
+        idx = int(target)
+        if idx < 0:
+            idx = 0
+        return current - history[idx]["member_count"]
+
+    return {
+        "current": current,
+        "delta_24h": _delta(1),
+        "delta_7d": _delta(7),
+        "samples": len(history),
+        "history": [{"date": str(h["captured_at"])[:10], "count": h["member_count"]} for h in history],
+    }
+
+
+def _snapshots_per_day():
+    return 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────

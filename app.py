@@ -20,6 +20,7 @@ import hashlib
 import sqlite3
 from datetime import datetime
 from urllib.parse import urlparse
+import urllib.parse
 
 from flask import (
     Flask, render_template, jsonify, request, redirect, g, flash, Response,
@@ -871,6 +872,81 @@ def api_revenue_clock():
         except ValueError:
             out["parse_error"] = True
     return jsonify(out)
+
+
+@app.route("/api/growth")
+@login_required
+def api_growth():
+    """Audience telemetry for the growth widget (free Bot API snapshots)."""
+    try:
+        from bots.growth_tracker import growth_summary
+        return jsonify({"status": "success", **growth_summary()})
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/growth/manual", methods=["POST"])
+@login_required
+def api_growth_manual():
+    """Record a manually-entered member count (pre-bot-credential phase)."""
+    try:
+        from bots.growth_tracker import record_manual
+        data = request.json or {}
+        result = record_manual(int(data.get("count", 0)), channel=data.get("channel", "telegram"))
+        return jsonify({"status": "success", **result})
+    except (TypeError, ValueError) as exc:
+        return jsonify({"status": "error", "message": f"Invalid count: {exc}"}), 400
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/share_links")
+@login_required
+def api_share_links():
+    """
+    Growth Share Kit: tracked /go/ links + ready-to-paste deal post per
+    distribution channel (reddit, x, whatsapp, crosspromo partners...).
+    """
+    try:
+        from urllib.parse import quote
+
+        campaign_id = request.args.get("campaign_id", type=int)
+        channels_raw = request.args.get("channels", "telegram,x,reddit")
+        if not campaign_id:
+            return jsonify({"status": "error", "message": "campaign_id required"}), 400
+
+        campaign = db_manager.get_campaign(campaign_id)
+        if not campaign:
+            return jsonify({"status": "error", "message": "Campaign not found"}), 404
+
+        base_url = db_manager.get_system_setting("public_base_url", "").rstrip("/") or request.url_root.rstrip("/")
+        target = campaign.get("target_url") or ""
+        product_id = quote(str(campaign.get("product_id") or campaign["id"]))
+        title = campaign.get("title") or ""
+
+        links = []
+        for channel in [c.strip() for c in channels_raw.split(",") if c.strip()][:12]:
+            qs = urllib.parse.urlencode({
+                "url": target,
+                "title": title,
+                "sector": campaign.get("sector") or "",
+                "channel": channel,
+            })
+            links.append({
+                "channel": channel,
+                "url": f"{base_url}/go/{product_id}?{qs}",
+            })
+
+        return jsonify({
+            "status": "success",
+            "campaign_id": campaign_id,
+            "title": title,
+            "caption": campaign.get("caption") or "",
+            "card_image": campaign.get("graphic_path") or "",
+            "links": links,
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @app.route("/api/background/status")

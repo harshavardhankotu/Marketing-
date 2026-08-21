@@ -427,9 +427,9 @@ section("H. Scheduler Engine")
 status = scheduler_engine.get_status()
 job_ids = {j["job_id"] for j in status.get("jobs", [])}
 expected_jobs = {"content_sweep_morning", "content_sweep_evening", "auto_publish_sweep",
-                 "retry_sweep", "hot_db_backup", "video_trash_collector"}
+                 "retry_sweep", "hot_db_backup", "video_trash_collector", "growth_snapshot"}
 check("scheduler running", status.get("scheduler_running") is True)
-check("all 6 jobs registered", expected_jobs.issubset(job_ids), f"got {job_ids}")
+check("all 7 jobs registered", expected_jobs.issubset(job_ids), f"got {job_ids}")
 
 conn = sqlite3.connect(DB_PATH)
 rc_before = conn.execute("SELECT run_count FROM scheduler_jobs WHERE job_id='video_trash_collector'").fetchone()
@@ -625,6 +625,60 @@ perf = client.get("/api/performance").get_json()
 ch_rows = (perf.get("stats") or {}).get("by_channel") or []
 check("channel P&L populated with commission column",
       len(ch_rows) >= 1 and "commission" in ch_rows[0] and ch_rows[0]["clicks"] >= 1)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# L. AUDIENCE ENGINE — growth telemetry, share kit, channel card
+# ═════════════════════════════════════════════════════════════════════════════
+section("L. Audience Engine (free Bot API + share kit)")
+from bots.growth_tracker import (  # noqa: E402
+    record_manual, fetch_member_count, growth_summary, build_tracked_link,
+)
+from generators.channel_card import render_channel_card  # noqa: E402
+
+# Graceful degradation without credentials.
+count, err = fetch_member_count()
+check("fetch_member_count safe without creds", count is None and err == "telegram_not_configured")
+
+# Manual snapshots build the growth curve.
+record_manual(500)
+time.sleep(0.05)
+record_manual(620)
+gs = growth_summary()
+check("growth summary current", gs.get("current") == 620)
+check("growth history ordered oldest-first", len(gs["history"]) >= 2 and gs["history"][-1]["count"] == 620)
+
+# Tracked link builder.
+link = build_tracked_link("https://deals.example.com", "ABC123",
+                          "https://www.amazon.in/dp/ABC123?tag=tag-21", "reddit-seed")
+check("tracked link routes via /go/ with channel label",
+      "/go/ABC123?" in link and "channel=reddit-seed" in link and "amazon.in" in link)
+
+# APIs.
+resp = client.get("/api/growth")
+gdata = resp.get_json()
+check("/api/growth serves summary", resp.status_code == 200 and gdata.get("status") == "success")
+check("/api/growth reports bot config state", isinstance(gdata.get("bot_configured"), bool))
+resp = client.post("/api/growth/manual", json={"count": 700})
+check("manual snapshot API works", resp.status_code == 200 and resp.get_json().get("count") == 700)
+resp = client.post("/api/growth/manual", json={"count": -5})
+check("manual snapshot rejects nonsense", resp.status_code == 400)
+
+pub_camp = sqlite3.connect(DB_PATH).execute(
+    "SELECT id FROM campaigns WHERE status='published' LIMIT 1").fetchone()[0]
+resp = client.get(f"/api/share_links?campaign_id={pub_camp}&channels=reddit,x")
+sdata = resp.get_json()
+check("share links generated per channel",
+      resp.status_code == 200 and len(sdata.get("links", [])) == 2 and
+      all("/go/" in l["url"] and "channel=" in l["url"] for l in sdata["links"]))
+check("share kit includes paste-ready caption", "PRICE DROP" in (sdata.get("caption") or ""))
+resp = client.get("/api/share_links")
+check("share_links requires campaign_id (400)", resp.status_code == 400)
+resp = client.get("/api/share_links?campaign_id=999999")
+check("share_links unknown campaign 404", resp.status_code == 404)
+
+# Cross-promo channel card.
+cc_path = render_channel_card(members=620, invite_url="t.me/dealsradar")
+check("channel card PNG rendered", os.path.exists(cc_path))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY

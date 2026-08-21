@@ -60,6 +60,44 @@
   <div class="grid grid-2 mt">
     <div class="panel">
       <div class="flex-between">
+        <h2>📈 Channel Growth</h2>
+        <span class="hint">free Bot API telemetry</span>
+      </div>
+      <div class="grid grid-2">
+        <div class="stat">
+          <div class="label">Members Now</div>
+          <div class="value accent" id="growth-now">—</div>
+        </div>
+        <div class="stat">
+          <div class="label">7-Day Change</div>
+          <div class="value" id="growth-week">—</div>
+        </div>
+      </div>
+      <div id="growth-bars" style="display:flex;align-items:flex-end;gap:4px;height:70px;margin:14px 0 6px"></div>
+      <div class="flex-between">
+        <span class="hint" id="growth-hint">Snapshots taken daily at 09:00 IST.</span>
+        <button class="btn" id="growth-manual-btn" style="padding:5px 12px;font-size:12px">+ Manual Count</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>🚀 Growth Share Kit</h2>
+      <div class="field">
+        <label for="sk-campaign">Deal</label>
+        <select id="sk-campaign"></select>
+      </div>
+      <div class="field">
+        <label for="sk-channels">Channels (comma-separated labels)</label>
+        <input id="sk-channels" value="reddit,x,whatsapp,crosspromo">
+      </div>
+      <button class="btn primary" id="sk-generate">Generate Tracked Links</button>
+      <div id="sk-output" class="mt"></div>
+    </div>
+  </div>
+
+  <div class="grid grid-2 mt">
+    <div class="panel">
+      <div class="flex-between">
         <h2>A/B Bandit Experiments</h2>
         <span class="hint">ε=0.20 epsilon-greedy</span>
       </div>
@@ -226,13 +264,93 @@ document.getElementById('run-pipeline').addEventListener('click', async () => {
   }
 });
 
+async function loadGrowth() {
+  try {
+    const data = await getJSON('/api/growth');
+    if (data.status !== 'success') return;
+    const now = data.current;
+    document.getElementById('growth-now').textContent = now == null ? '—' : Number(now).toLocaleString('en-IN');
+    const wk = data.delta_7d;
+    const wkEl = document.getElementById('growth-week');
+    if (wk == null) { wkEl.textContent = '—'; }
+    else {
+      wkEl.textContent = (wk >= 0 ? '+' : '') + wk;
+      wkEl.style.color = wk > 0 ? 'var(--accent)' : wk < 0 ? 'var(--red)' : 'var(--text)';
+    }
+    // Mini bar chart of history.
+    const hist = (data.history || []).slice(-21);
+    if (hist.length >= 2) {
+      const min = Math.min(...hist.map(h => h.count));
+      const max = Math.max(...hist.map(h => h.count));
+      const span = Math.max(max - min, 1);
+      document.getElementById('growth-bars').innerHTML = hist.map(h => {
+        const pct = 18 + ((h.count - min) / span) * 82;
+        return `<div style="flex:1;height:${pct}%;background:linear-gradient(180deg,var(--cyan),transparent 90%);border-radius:3px 3px 0 0" title="${esc(h.date)}: ${Number(h.count).toLocaleString('en-IN')}"></div>`;
+      }).join('');
+    }
+    if (!data.bot_configured) {
+      document.getElementById('growth-hint').textContent = 'Bot token not set — use Manual Count until then.';
+    }
+  } catch (e) { /* non-fatal */ }
+}
+
+async function loadShareKit() {
+  try {
+    const data = await getJSON('/api/history?limit=50');
+    if (data.status !== 'success') return;
+    const sel = document.getElementById('sk-campaign');
+    sel.innerHTML = (data.campaigns || []).map(c =>
+      `<option value="${c.id}">${esc((c.title || '').slice(0, 60))}${c.status === 'published' ? ' ✓' : ''}</option>`
+    ).join('');
+  } catch (e) { /* non-fatal */ }
+}
+
+document.getElementById('sk-generate').addEventListener('click', async () => {
+  const out = document.getElementById('sk-output');
+  const cid = document.getElementById('sk-campaign').value;
+  if (!cid) { out.innerHTML = '<span class="hint">No campaigns yet — run the pipeline first.</span>'; return; }
+  const channels = encodeURIComponent(document.getElementById('sk-channels').value);
+  try {
+    const res = await fetch(`/api/share_links?campaign_id=${cid}&channels=${channels}`, { credentials: 'same-origin' });
+    const data = await res.json();
+    if (data.status !== 'success') { out.innerHTML = `<span class="hint">✘ ${esc(data.message)}</span>`; return; }
+    const links = (data.links || []).map(l =>
+      `<div class="mt"><div class="hint">${esc(l.channel)}</div>` +
+      `<input readonly value="${esc(l.url)}" onclick="this.select()">` +
+      ` <button class="btn" style="padding:4px 10px;font-size:11px" onclick="copyText(this, '${esc(l.url)}')">Copy</button></div>`
+    ).join('');
+    out.innerHTML = links +
+      `<details class="mt"><summary class="hint">Ready-to-paste deal post</summary><textarea rows="6" readonly onclick="this.select()">${esc(data.caption)}</textarea></details>`;
+  } catch (e) { out.innerHTML = '<span class="hint">Failed to generate.</span>'; }
+});
+
+function copyText(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const old = btn.textContent; btn.textContent = '✓'; setTimeout(() => btn.textContent = old, 1200);
+  });
+}
+
+document.getElementById('growth-manual-btn').addEventListener('click', async () => {
+  const val = prompt('Enter current member count:');
+  if (!val) return;
+  await fetch('/api/growth/manual', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+    body: JSON.stringify({ count: parseInt(val, 10) })
+  });
+  loadGrowth();
+});
+
 loadSectors();
 loadPerformance();
 loadReliability();
 loadDLQ();
 loadRevenueClock();
+loadGrowth();
+loadShareKit();
 setInterval(loadPerformance, 15000);
 setInterval(loadReliability, 30000);
 setInterval(loadRevenueClock, 60000);
+setInterval(loadGrowth, 300000);
 </script>
 {% endblock %}
