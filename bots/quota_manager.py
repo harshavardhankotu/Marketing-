@@ -273,21 +273,25 @@ def check_breaker(provider):
 def _set_breaker_state(provider, state, failure_count=None, success_count=None):
     conn = _conn()
     try:
+        sets = ["state = ?"]
         params = [state]
         if failure_count is not None:
+            sets.append("failure_count = ?")
             params.append(failure_count)
         if success_count is not None:
+            sets.append("success_count = ?")
             params.append(success_count)
-        params.append(provider)
+        trip_flag = 1 if state in ("OPEN", "HALF_OPEN") else 0
+        params.extend([trip_flag, trip_flag, provider])
         conn.execute(
             f"""
             UPDATE circuit_breaker_state
-            SET state = ?, {', failure_count = ?' if failure_count is not None else ''}{', success_count = ?' if success_count is not None else ''},
-                last_failure = CASE WHEN ? = 'OPEN' OR ? = 'HALF_OPEN' THEN CURRENT_TIMESTAMP ELSE last_failure END,
-                tripped_at = CASE WHEN ? = 'OPEN' OR ? = 'HALF_OPEN' THEN CURRENT_TIMESTAMP ELSE tripped_at END
+            SET {', '.join(sets)},
+                last_failure = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE last_failure END,
+                tripped_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE tripped_at END
             WHERE provider = ?
             """,
-            (*params, state, state, state, state, provider),
+            tuple(params),
         )
         conn.commit()
     finally:

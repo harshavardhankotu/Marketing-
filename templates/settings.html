@@ -49,6 +49,26 @@
   </div>
 
   <div class="panel">
+    <h2>Change Password</h2>
+    <form method="post" action="/settings/password">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="current_password">Current Password</label>
+        <input type="password" id="current_password" name="current_password" autocomplete="current-password" required>
+      </div>
+      <div class="field">
+        <label for="new_password">New Password (min 8 chars)</label>
+        <input type="password" id="new_password" name="new_password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <div class="field">
+        <label for="confirm_password">Confirm New Password</label>
+        <input type="password" id="confirm_password" name="confirm_password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <button type="submit" class="btn">Update Password</button>
+    </form>
+  </div>
+
+  <div class="panel">
     <h2>UI Ambient Theme</h2>
     <div class="field">
       <label for="bg_theme">Dashboard Background</label>

@@ -5,14 +5,18 @@ Scheduled jobs:
     1. Content sweep (morning 08:15 IST)     — source + compose new campaigns.
     2. Content sweep (evening 18:30 IST)      — evening publishing batch.
     3. Auto-publish sweep (every 5 minutes)   — publish due pending campaigns.
-    4. Zero-cost hot database backup (daily 02:00 IST) using the native
+    4. Retry queue sweep (every 5 minutes)    — drain failed distribution
+       retries with backoff, dead-lettering after max attempts.
+    5. Zero-cost hot database backup (daily 02:00 IST) using the native
        SQLite ``source_conn.backup(target_conn)`` API for transaction-safe
        online backups, deleting backups older than 7 days.
-    5. Video trash collector (daily 03:00 IST) — delete rendered .mp4/.png
+    6. Video trash collector (daily 03:00 IST) — delete rendered .mp4/.png
        under ``static/campaigns/`` older than 48 hours to keep disk usage flat.
 
-The scheduler uses a thread-local flag so it is only ever started once per
-process (the Flask reloader can otherwise double-start it).
+The scheduler uses a module-level singleton so it is only ever started once
+per process (the Flask reloader can otherwise double-start it), and every job
+run records telemetry (last_run_at / last_status / run_count) into the
+scheduler_jobs table for the dashboard.
 """
 
 import os
@@ -110,6 +114,37 @@ def auto_publish_sweep():
     return published
 
 
+def retry_sweep(max_jobs=20):
+    """
+    Drain the background retry queue: acquire pending retry_distribution jobs,
+    execute them, and let ``fail_job`` apply backoff or dead-letter after the
+    configured max retries. Runs every 5 minutes so failed distributions
+    self-heal without operator intervention.
+    """
+    from job_queue import acquire_next_job
+    from distributor import process_retry_job
+
+    processed = 0
+    for _ in range(max_jobs):
+        try:
+            job = acquire_next_job()
+        except Exception as exc:
+            print(f"[SCHEDULER] Retry sweep acquire failed: {exc}")
+            break
+        if not job:
+            break
+        try:
+            process_retry_job(job["job_id"], job["payload"])
+        except Exception as exc:
+            from job_queue import fail_job
+            fail_job(job["job_id"], str(exc))
+        processed += 1
+
+    if processed:
+        print(f"[SCHEDULER] Retry sweep processed {processed} job(s).")
+    return processed
+
+
 def hot_backup():
     """
     Zero-cost hot backup using SQLite's online backup API.
@@ -187,9 +222,51 @@ def video_trash_collector(older_than_hours=48):
 # ─────────────────────────────────────────────────────────────────────────────
 # SCHEDULER LIFECYCLE
 # ─────────────────────────────────────────────────────────────────────────────
+_SCHEDULER = None  # live APScheduler instance (for trigger_now / pause/resume)
+
+
+def _record_job_run(job_id, status, error=""):
+    """Persist run telemetry for the dashboard (last_run_at / last_status / run_count)."""
+    from db_manager import _connection
+
+    try:
+        conn = _connection()
+        try:
+            conn.execute(
+                """
+                UPDATE scheduler_jobs
+                SET last_run_at = datetime('now'),
+                    last_status = ?,
+                    last_error = ?,
+                    run_count = run_count + 1
+                WHERE job_id = ?
+                """,
+                (status, (str(error) or "")[:500], job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[SCHEDULER] Telemetry write failed for {job_id}: {exc}")
+
+
+def _instrumented(job_id, fn):
+    """Wrap a job so every run records success/failure telemetry."""
+    def wrapper(*args, **kwargs):
+        try:
+            result = fn(*args, **kwargs)
+            _record_job_run(job_id, "success")
+            return result
+        except Exception as exc:
+            _record_job_run(job_id, "failed", error=str(exc))
+            raise
+    wrapper.__name__ = f"{fn.__name__}_instrumented"
+    return wrapper
+
+
 def start(app=None):
     """Register all scheduled jobs (idempotent per process)."""
-    global _STARTED
+    global _STARTED, _SCHEDULER
     if _STARTED:
         return
 
@@ -201,37 +278,51 @@ def start(app=None):
         print(f"[SCHEDULER] APScheduler not installed ({exc}). Scheduling disabled.")
         return
 
+    # Recover jobs left 'running' by a previous crash before anything else.
+    try:
+        from job_queue import recover_stale_jobs
+        recover_stale_jobs()
+    except Exception as exc:
+        print(f"[SCHEDULER] Stale job recovery failed: {exc}")
+
     scheduler = BackgroundScheduler(timezone=SCHEDULER_TZ, daemon=True)
     scheduler.add_job(
-        content_sweep,
+        _instrumented("content_sweep_morning", content_sweep),
         CronTrigger(hour=8, minute=15, timezone=SCHEDULER_TZ),
         id="content_sweep_morning",
         name="Morning content sweep",
         replace_existing=True,
     )
     scheduler.add_job(
-        content_sweep,
+        _instrumented("content_sweep_evening", content_sweep),
         CronTrigger(hour=18, minute=30, timezone=SCHEDULER_TZ),
         id="content_sweep_evening",
         name="Evening content sweep",
         replace_existing=True,
     )
     scheduler.add_job(
-        auto_publish_sweep,
+        _instrumented("auto_publish_sweep", auto_publish_sweep),
         IntervalTrigger(minutes=5),
         id="auto_publish_sweep",
         name="Auto-publish sweep",
         replace_existing=True,
     )
     scheduler.add_job(
-        hot_backup,
+        _instrumented("retry_sweep", retry_sweep),
+        IntervalTrigger(minutes=5),
+        id="retry_sweep",
+        name="Retry queue sweep",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _instrumented("hot_db_backup", hot_backup),
         CronTrigger(hour=2, minute=0, timezone=SCHEDULER_TZ),
         id="hot_db_backup",
         name="Hot database backup",
         replace_existing=True,
     )
     scheduler.add_job(
-        video_trash_collector,
+        _instrumented("video_trash_collector", video_trash_collector),
         CronTrigger(hour=3, minute=0, timezone=SCHEDULER_TZ),
         id="video_trash_collector",
         name="Video trash collector (48h media cleanup)",
@@ -239,6 +330,7 @@ def start(app=None):
     )
 
     scheduler.start()
+    _SCHEDULER = scheduler
     _STARTED = True
     print("[SCHEDULER] Scheduler started (Asia/Kolkata).")
     _sync_job_table(scheduler)
@@ -291,26 +383,22 @@ def get_status():
 
 
 def trigger_now(job_id):
-    """Manually trigger a registered job by id (admin API)."""
-    from apscheduler.schedulers.background import BackgroundScheduler
+    """Manually trigger a registered job by id (admin API). Runs synchronously."""
+    if not _STARTED or _SCHEDULER is None:
+        return {"status": "error", "message": "Scheduler is not running."}
 
-    jobs = {job.id: job for job in _get_scheduler().get_jobs()} if _STARTED else {}
+    jobs = {job.id: job for job in _SCHEDULER.get_jobs()}
     if job_id not in jobs:
         return {"status": "error", "message": f"Job '{job_id}' not registered."}
     try:
-        jobs[job_id].func()
-        return {"status": "success", "message": f"Job '{job_id}' executed."}
+        result = jobs[job_id].func()
+        return {"status": "success", "message": f"Job '{job_id}' executed.", "result": result}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
 
 
-def _get_scheduler():
-    from apscheduler.schedulers.background import BackgroundScheduler
-    return BackgroundScheduler()
-
-
 def set_job_enabled(job_id, enabled):
-    """Enable or disable a scheduler job."""
+    """Enable (resume) or disable (pause) a scheduler job — DB + live scheduler."""
     from db_manager import _connection
 
     conn = _connection()
@@ -319,4 +407,16 @@ def set_job_enabled(job_id, enabled):
         conn.commit()
     finally:
         conn.close()
-    return {"status": "success", "job_id": job_id, "enabled": enabled}
+
+    live = False
+    if _STARTED and _SCHEDULER is not None:
+        try:
+            if enabled:
+                _SCHEDULER.resume_job(job_id)
+            else:
+                _SCHEDULER.pause_job(job_id)
+            live = True
+        except Exception as exc:
+            print(f"[SCHEDULER] Live pause/resume failed for {job_id}: {exc}")
+
+    return {"status": "success", "job_id": job_id, "enabled": enabled, "live_applied": live}

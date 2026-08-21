@@ -54,6 +54,31 @@ app.config["SECRET_KEY"] = config.FLASK_SECRET_KEY
 app.config["WTF_CSRF_TIME_LIMIT"] = None
 
 
+# HTML-safe JSON: escape < > & in serialized output so stored payloads can never
+# appear as raw markup in API responses (JSON parsers decode \u003c back to '<',
+# so data integrity is unaffected). Defense-in-depth on top of client esc().
+from flask.json.provider import DefaultJSONProvider  # noqa: E402
+
+
+class HardenedJSONProvider(DefaultJSONProvider):
+    def dumps(self, obj, **kwargs):
+        out = super().dumps(obj, **kwargs)
+        return (
+            out.replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            .replace("'", "\\u0027")
+        )
+
+
+app.json = HardenedJSONProvider(app)
+
+# Session cookie hardening (common-sense web security).
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = not os.getenv("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AMBIENT BACKGROUND — injected into every template
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +166,15 @@ def _inject_csrf_and_headers(response):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "media-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'self'"
+    )
 
     if response.content_type and "text/html" in response.content_type:
         token = generate_csrf()
@@ -260,6 +294,46 @@ def settings_page():
         "commission_rates": db_manager.get_operator_setting("commission_rates", "{}"),
     }
     return render_template("settings.html", settings=settings)
+
+
+@app.route("/settings/password", methods=["POST"])
+@login_required
+@limiter.limit("10 per hour")
+def change_password():
+    """Let the operator rotate their own password (bcrypt re-hash)."""
+    current = request.form.get("current_password", "")
+    new = request.form.get("new_password", "")
+    confirm = request.form.get("confirm_password", "")
+
+    if len(new) < 8:
+        flash("New password must be at least 8 characters.", "error")
+        return redirect("/settings")
+    if new != confirm:
+        flash("New password and confirmation do not match.", "error")
+        return redirect("/settings")
+
+    conn = sqlite3.connect(db_manager.DB_PATH, timeout=30.0)
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (current_user.id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row or not bcrypt.checkpw(current.encode("utf-8"), row[0].encode("utf-8")):
+        flash("Current password is incorrect.", "error")
+        return redirect("/settings")
+
+    hashed = bcrypt.hashpw(new.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    conn = sqlite3.connect(db_manager.DB_PATH, timeout=30.0)
+    try:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hashed, current_user.id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    flash("Password updated successfully!", "success")
+    return redirect("/settings")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -713,4 +787,6 @@ _seed()
 _start_scheduler()
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    _debug = os.getenv("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes")
+    _port = int(os.getenv("PORT", "5000") or 5000)
+    app.run(debug=_debug, port=_port)
