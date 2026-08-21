@@ -27,9 +27,10 @@ Legend: ✅ implemented · 🟡 operator action required (process, not code) · 
 
 ## Pre-launch operator checklist
 
-- [ ] Apply to Associates only when ready: ≥10 original posts live (run sweeps until satisfied), then set **Settings → Application Date** to start the monitored 180-day clock.
-- [ ] Publish grievance/contact handle in every channel bio (matches `/privacy` §8).
-- [ ] Put Caddy HTTPS in front (`deploy/Caddyfile`) and flip `SESSION_COOKIE_SECURE=True`.
-- [ ] Rotate `POSTBACK_SECRET`/`FLASK_SECRET_KEY` before go-live; store `.env` off-repo.
+- [ ] Run `python setup_wizard.py` — generates rotated secrets, walks every credential with live validation.
+- [ ] Post deals until **Dashboard → Operator Duties Console shows READY TO APPLY**, then apply at affiliate-program.amazon.in and set **Settings → Application Date** (the 180-day clock + duty-watch alerts take over from there).
+- [ ] Set the grievance officer in Settings (auto-renders onto /privacy §8 and /terms).
+- [ ] Put Caddy HTTPS in front (`deploy/Caddyfile`) and set Public Site URL to https:// — secure cookies enable themselves; optionally force `SESSION_COOKIE_SECURE=True`.
+- [ ] Monthly spot-checks run themselves via PA-API (`spot_check_sweep`); mismatches land in Operator Alerts — only act when flagged. Manual fallback stays honest when PA-API is absent.
+- [ ] When the GST watch turns red (or `duty_watch` alerts), download `/api/reports/commissions.csv` for the CA conversation.
 - [ ] Verify first imported commission report reconciles with dashboard Channel P&L.
-- [ ] Monthly: sample-check 5 posted deals against live Amazon prices (claim substantiation).

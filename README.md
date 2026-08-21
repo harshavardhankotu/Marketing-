@@ -54,9 +54,13 @@ app.py                          Flask app: auth, /go/ redirects, postback, APIs
 python -m venv .venv
 .venv\Scripts\activate            # Windows
 pip install -r requirements.txt
-copy .env.example .env            # then fill in credentials
-python app.py                     # http://127.0.0.1:5000  (admin/admin123)
+python setup_wizard.py            # guided .env setup with live validation
+python app.py                     # http://127.0.0.1:5000
 ```
+
+The wizard generates rotated secrets, prompts for every credential, and
+live-validates Telegram/SMTP (free endpoints). `python setup_wizard.py --check`
+re-validates an existing `.env` anytime.
 
 ## Ambient UI backgrounds
 

@@ -180,6 +180,144 @@ def daily_pin():
     return 1 if result.get("pinned") else 0
 
 
+def spot_check_sweep():
+    """
+    Run one automated price-verification cycle when the compliance cadence
+    is due (PA-API live prices; honest no-op otherwise). Idempotent per day.
+    """
+    import config as _cfg
+    from db_manager import get_system_setting
+    from bots.spot_checker import run_cycle
+
+    last = get_system_setting("last_spot_check_at", "")
+    if last:
+        from datetime import datetime as _dt, date as _d
+        try:
+            days = (_dt.utcnow().date() - _d.fromisoformat(str(last)[:10])).days
+            if days <= _cfg.SPOT_CHECK_DAYS:
+                return 0
+        except ValueError:
+            pass
+    result = run_cycle()
+    return result.get("verified", 0)
+
+
+def duty_watch():
+    """
+    Once-daily operator nudge, delivered through alert_engine (Telegram when
+    configured, local log otherwise):
+      * READY to apply to Associates but application date still unset
+      * GST threshold crossed (book the CA conversation)
+      * spot-check overdue by more than a week
+    Each nudge fires once until the state clears (one-shot flags).
+    """
+    from db_manager import (
+        get_system_setting, set_system_setting, get_operator_setting,
+    )
+    from bots.alert_engine import send_telegram_alert
+
+    fired = []
+
+    # ── Associates eligibility ────────────────────────────────────────────
+    applied_at = get_system_setting("associates_applied_at", "")
+    flag_key = "alert_ready_to_apply_sent"
+    try:
+        import config as _config
+        published_conn = _conn_for_duty()
+        try:
+            published = published_conn.execute(
+                "SELECT COUNT(*) FROM campaigns WHERE status='published'").fetchone()[0]
+        finally:
+            published_conn.close()
+        tag_cfg = bool(_config.AMAZON_ASSOCIATE_TAG) and \
+            "your_" not in str(_config.AMAZON_ASSOCIATE_TAG).lower()
+        grievance_set = bool(
+            get_operator_setting("grievance_name", "") and
+            get_operator_setting("grievance_contact", ""))
+        https_on = get_system_setting("public_base_url", "").lower().startswith("https://")
+        secret_rotated = not get_postback_secret_is_default()
+        ready = (published >= 10 and tag_cfg and grievance_set and https_on and secret_rotated)
+        checks_ok = True
+    except Exception:
+        checks_ok, ready, published = False, False, 0
+
+    if checks_ok and ready and not applied_at and not get_system_setting(flag_key, ""):
+        send_telegram_alert(
+            "✅ Eligibility reached: site meets Amazon Associates content bar "
+            "(10+ posts, disclosure, privacy, HTTPS). Apply now at "
+            "https://affiliate-program.amazon.in/ then set the Application "
+            "Date in Settings to start the monitored 180-day clock.",
+            level="info")
+        set_system_setting(flag_key, datetime.utcnow().date().isoformat())
+        fired.append("ready_to_apply")
+
+    # ── GST threshold crossing ────────────────────────────────────────────
+    gst_flag_key = "alert_gst_crossed"
+    total_comm = _commission_total()
+    threshold = float(_cfg_gst_threshold())
+    if threshold > 0 and total_comm >= threshold and \
+            not get_system_setting(gst_flag_key, ""):
+        send_telegram_alert(
+            f"🧾 Commission lifetime total ₹{total_comm:,.0f} crossed the GST "
+            f"registration watch-point (₹{threshold:,.0f}). Book the CA "
+            "conversation; commission CSV is in Reports.",
+            level="warning")
+        set_system_setting(gst_flag_key, datetime.utcnow().date().isoformat())
+        fired.append("gst_threshold")
+
+    # ── Spot-check badly overdue (> cadence + 7 days) ─────────────────────
+    last_spot = get_system_setting("last_spot_check_at", "")
+    overdue = True
+    if last_spot:
+        try:
+            from datetime import date as _d
+            days = (datetime.utcnow().date() - _d.fromisoformat(str(last_spot)[:10])).days
+            overdue = days > (_cfg_spot_days() + 7)
+        except ValueError:
+            pass
+    spot_flag_key = "alert_spot_overdue_sent"
+    if overdue and not get_system_setting(spot_flag_key, ""):
+        send_telegram_alert(
+            "🔍 Price spot-check is overdue. Run it from the dashboard "
+            "(auto-verifies via PA-API when configured).", level="warning")
+        set_system_setting(spot_flag_key, datetime.utcnow().date().isoformat())
+        fired.append("spot_overdue")
+
+    return len(fired)
+
+
+def _commission_total():
+    from db_manager import _connection
+    conn = _connection()
+    try:
+        return float(conn.execute(
+            "SELECT COALESCE(SUM(commission_amount),0) FROM affiliate_conversions "
+            "WHERE status='converted'").fetchone()[0] or 0)
+    finally:
+        conn.close()
+
+
+def _cfg_gst_threshold():
+    import config
+    return config.GST_THRESHOLD
+
+
+def _cfg_spot_days():
+    import config
+    return config.SPOT_CHECK_DAYS
+
+
+def get_postback_secret_is_default():
+    import db_manager
+    secret = db_manager.get_postback_secret()
+    return str(secret).startswith("change_me")
+
+
+def _conn_for_duty():
+    from db_manager import _connection
+    return _connection()
+
+
 def hot_backup():
     """
     Zero-cost hot backup using SQLite's online backup API.
@@ -361,6 +499,20 @@ def start(app=None):
         CronTrigger(hour=10, minute=0, timezone=SCHEDULER_TZ),
         id="daily_pin",
         name="Pin top-EV deal of the day",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _instrumented("spot_check_sweep", spot_check_sweep),
+        CronTrigger(hour=11, minute=0, timezone=SCHEDULER_TZ),
+        id="spot_check_sweep",
+        name="Automated price spot-check cycle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _instrumented("duty_watch", duty_watch),
+        CronTrigger(hour=10, minute=5, timezone=SCHEDULER_TZ),
+        id="duty_watch",
+        name="Operator duty watch (eligibility/overdue alerts)",
         replace_existing=True,
     )
     scheduler.add_job(

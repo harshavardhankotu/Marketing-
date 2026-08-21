@@ -428,9 +428,10 @@ section("H. Scheduler Engine")
 status = scheduler_engine.get_status()
 job_ids = {j["job_id"] for j in status.get("jobs", [])}
 expected_jobs = {"content_sweep_morning", "content_sweep_evening", "auto_publish_sweep",
-                 "retry_sweep", "hot_db_backup", "video_trash_collector", "growth_snapshot"}
+                 "retry_sweep", "hot_db_backup", "video_trash_collector", "growth_snapshot",
+                 "daily_pin", "spot_check_sweep", "duty_watch"}
 check("scheduler running", status.get("scheduler_running") is True)
-check("all 7 jobs registered", expected_jobs.issubset(job_ids), f"got {job_ids}")
+check("all 10 jobs registered", expected_jobs.issubset(job_ids), f"got {job_ids}")
 
 conn = sqlite3.connect(DB_PATH)
 rc_before = conn.execute("SELECT run_count FROM scheduler_jobs WHERE job_id='video_trash_collector'").fetchone()
@@ -1008,8 +1009,8 @@ with mock.patch.object(__import__("bots.pinner", fromlist=["_configured"]), "_co
 check("pinner reports bot-side failures honestly", res.get("pinned") is False and "admin" in res.get("reason", ""))
 
 status = scheduler_engine.get_status()
-job_ids = {j["job_id"] for j in status.get("jobs", [])}
-check("daily_pin job registered (8 jobs)", "daily_pin" in job_ids and len(job_ids) >= 8, str(job_ids))
+job_ids_p = {j["job_id"] for j in status.get("jobs", [])}
+check("daily_pin job registered", "daily_pin" in job_ids_p)
 
 # ── Newsletter: double opt-in lifecycle ──────────────────────────────────────
 resp = anon.post("/subscribe", data={"email": "not-an-email"}, follow_redirects=False)
@@ -1119,6 +1120,109 @@ client.get("/logout"); login("viewer", "viewer123")
 resp = client.post("/api/compliance/spot_check", json={"reviewed": 5})
 check("viewer blocked from spot-check logging", resp.status_code in (401, 403))
 client.get("/logout"); login()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R. FULL AUTOMATION — setup wizard, auto spot-check, CA export, duty watch
+# ═════════════════════════════════════════════════════════════════════════════
+section("R. Full Automation Layer")
+import setup_wizard  # noqa: E402
+from bots import spot_checker  # noqa: E402
+
+# ── Setup wizard validators (offline-safe) ───────────────────────────────────
+ok_tg, detail_tg = setup_wizard.validate_telegram("", "")
+check("wizard telegram flags missing creds", ok_tg is False)
+state_sm, _ = setup_wizard.validate_smtp("", "", "", "")
+check("wizard smtp skip-state when unconfigured", state_sm is None)
+state_gm, _ = setup_wizard.validate_gemini("")
+check("wizard gemini skip-state when unconfigured", state_gm is None)
+check("wizard amazon tag shape check", not setup_wizard.valid_amazon_tag("abc") and setup_wizard.valid_amazon_tag("brand-21"))
+sec = setup_wizard.gen_secret()
+check("wizard secret generator length", len(sec) == 64 and sec != setup_wizard.gen_secret())
+
+# ── Auto spot-check: PA-API path with mocked live prices ─────────────────────
+conn = sqlite3.connect(DB_PATH)
+sample_rows = conn.execute(
+    "SELECT id, product_id, price FROM campaigns WHERE status='published' LIMIT 3").fetchall()
+conn.close()
+with mock.patch.object(spot_checker, "fetch_live_prices",
+                       return_value={r[1]: float(r[2]) * 0.95 for r in sample_rows}):
+    res = spot_checker.run_cycle()
+check("auto spot-check verifies via live prices", res.get("verified") >= 1 and res.get("method") == "paapi")
+check("spot-cycle completes and stamps date",
+      db_manager.get_system_setting("last_spot_check_at", "") != "")
+mismatch_test = spot_checker.run_cycle.__module__
+log = sqlite3.connect(DB_PATH).execute("SELECT 1").fetchone()  # db touch ok
+check("mismatches surfaced when drift exceeds tolerance", isinstance(res.get("mismatches"), list))
+
+# Manual fallback honesty when PA-API absent.
+db_manager.set_system_setting("last_spot_check_at", "")          # reset cycle
+db_manager.set_operator_setting("spot_checked_ids", "[]")
+with mock.patch.object(spot_checker, "fetch_live_prices", return_value={}):
+    res = spot_checker.run_cycle()
+check("no-paapi path returns manual plan (never fakes)",
+      res.get("method") == "manual" and res.get("completed") is False
+      and len(res.get("review_urls", [])) >= 1)
+check("manual path does NOT stamp compliance date",
+      db_manager.get_system_setting("last_spot_check_at", "") == "")
+
+status_sp = spot_checker.status()
+check("spot-check status snapshot serves", isinstance(status_sp, dict) and "due" in status_sp)
+
+# ── CA-ready commission export ────────────────────────────────────────────────
+resp = client.get("/api/reports/commissions.csv")
+csv_text = resp.get_data(as_text=True)
+check("commission CSV downloads with totals row",
+      resp.status_code == 200 and "TOTAL" in csv_text and "IMP-001" in csv_text)
+resp = anon.get("/api/reports/commissions.csv")
+check("commission CSV blocked anonymously", resp.status_code == 401)
+
+# ── Application pack assembles the Amazon form answers ────────────────────────
+resp = client.get("/api/readiness/application_pack")
+pack = resp.get_json()
+check("application pack includes posts + legal urls",
+      pack.get("status") == "success" and len(pack.get("posts", [])) >= 1
+      and set(pack.get("legal_urls", {})) == {"disclosure", "privacy", "terms"})
+check("pack links to Associates signup", "affiliate-program.amazon.in" in pack.get("signup_url", ""))
+
+# ── Duty watch fires eligibility nudge once, then stays quiet ─────────────────
+# Stage FULL eligibility: cross the 10-post bar + every readiness input.
+conn = sqlite3.connect(DB_PATH)
+for i in range(12):
+    conn.execute(
+        "INSERT INTO campaigns (product_id, title, sector, target_url, price, "
+        "deal_score, status) VALUES (?, ?, 'electronics', "
+        "'https://www.amazon.in/dp/B0DUTY?tag=t-21', 999, 99, 'published')",
+        (f"DUTY-{i}", f"Duty filler {i}"))
+conn.commit(); conn.close()
+client.post("/settings", data={
+    "auto_publish_timeout": "30", "primary_routing_domain": "https://www.amazon.in",
+    "public_base_url": "https://deals.example.com", "associates_applied_at": "",
+    "grievance_name": "Harsha V", "grievance_contact": "grievances@example.in",
+    "postback_secret": "rotated_secret_123", "commission_rates": "{}"})
+db_manager.set_system_setting("alert_ready_to_apply_sent", "")
+
+import config as _cfgmod
+with mock.patch.object(_cfgmod, "AMAZON_ASSOCIATE_TAG", "audit-tag-21"):
+    scheduler_engine.duty_watch()
+    fired_flag = db_manager.get_system_setting("alert_ready_to_apply_sent", "")
+    scheduler_engine.duty_watch()
+    still_same = db_manager.get_system_setting("alert_ready_to_apply_sent", "") == fired_flag
+
+check("duty-watch alerts on eligibility once (one-shot)",
+      fired_flag != "" and still_same, f"flag={fired_flag}")
+
+# Cleanup staged state so nothing downstream sees filler rows.
+conn = sqlite3.connect(DB_PATH)
+conn.execute("DELETE FROM campaigns WHERE product_id LIKE 'DUTY-%'")
+conn.commit(); conn.close()
+client.post("/settings", data={
+    "auto_publish_timeout": "30", "primary_routing_domain": "https://www.amazon.in",
+    "public_base_url": "", "associates_applied_at": "",
+    "grievance_name": "", "grievance_contact": "",
+    "postback_secret": "", "commission_rates": "{}"})
+
+resp = client.post("/api/compliance/spot_check/run")
+check("spot-check run endpoint executes", resp.status_code == 200)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY

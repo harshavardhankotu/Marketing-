@@ -1241,29 +1241,9 @@ def api_readiness():
     """
     try:
         import config as cfg
-        conn = get_db()
-        published = conn.execute(
-            "SELECT COUNT(*) FROM campaigns WHERE status='published'").fetchone()[0]
+        checks, ready, published = _readiness_checks()
 
-        tag_cfg = bool(cfg.AMAZON_ASSOCIATE_TAG) and \
-            "your_" not in str(cfg.AMAZON_ASSOCIATE_TAG).lower()
-        postback_default = str(db_manager.get_postback_secret()).startswith("change_me")
-        grievance = (db_manager.get_operator_setting("grievance_name", ""),
-                     db_manager.get_operator_setting("grievance_contact", ""))
-        pbu = db_manager.get_system_setting("public_base_url", "")
         last_check = db_manager.get_system_setting("last_spot_check_at", "")
-
-        checks = {
-            "posts_published_ge_10": published >= 10,
-            "affiliate_tag_configured": tag_cfg,
-            "telegram_channel_ready": config.has_telegram(),
-            "disclosure_page_live": True,   # route always mounted
-            "privacy_page_live": True,
-            "grievance_contact_set": bool(grievance[0] and grievance[1]),
-            "https_public_url": str(pbu).lower().startswith("https://"),
-            "postback_secret_rotated": not postback_default,
-        }
-
         days_since = None
         if last_check:
             try:
@@ -1280,7 +1260,7 @@ def api_readiness():
         return jsonify({
             "status": "success",
             "checks": checks,
-            "ready_to_apply": all(checks.values()),
+            "ready_to_apply": ready,
             "published_posts": published,
             "spot_check": {"due": spot_due, "days_since": days_since,
                            "cadence_days": cfg.SPOT_CHECK_DAYS},
@@ -1326,6 +1306,118 @@ def api_spot_check_log():
                 "notes": str(data.get("notes", ""))[:300]})
     db_manager.set_operator_setting("spot_check_log", json.dumps(log[-24:]))
     return jsonify({"status": "success", "logged_at": db_manager.get_system_setting("last_spot_check_at")})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REPORTS & DUTY AUTOMATION — CA-ready exports, spot-check runner, apply pack
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/reports/commissions.csv")
+@login_required
+def api_report_commissions_csv():
+    """The exact file a CA wants: every conversion with amounts, plus totals."""
+    if current_user.role != "admin":
+        return jsonify({"status": "error", "message": "Admin role required"}), 403
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT date(timestamp) AS day, transaction_id, product_id,
+               sale_amount, commission_amount
+        FROM affiliate_conversions WHERE status='converted'
+        ORDER BY timestamp
+        """
+    ).fetchall()
+    total_sale = sum(r[3] or 0 for r in rows)
+    total_comm = sum(r[4] or 0 for r in rows)
+
+    lines = ["date,transaction_id,product_id,sale_amount,commission_amount"]
+    for r in rows:
+        lines.append(f"{r[0]},{r[1]},{r[2]},{float(r[3] or 0):.2f},{float(r[4] or 0):.2f}")
+    lines.append("")
+    lines.append(f",TOTAL,,{total_sale:.2f},{total_comm:.2f}")
+    csv_text = "\n".join(lines)
+    return Response(csv_text, mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=commissions_report.csv"})
+
+
+@app.route("/api/readiness/application_pack")
+@login_required
+def api_application_pack():
+    """Everything Amazon's Associates application asks for, pre-assembled."""
+    if current_user.role != "admin":
+        return jsonify({"status": "error", "message": "Admin role required"}), 403
+    conn = get_db()
+    posts = [dict(r) for r in conn.execute(
+        "SELECT id, title FROM campaigns WHERE status='published' ORDER BY id LIMIT 15"
+    ).fetchall()]
+    conn.close()
+    base = _public_base_url().rstrip("/")
+    tg = config.TELEGRAM_CHAT_ID.lstrip("@") if config.TELEGRAM_CHAT_ID else ""
+    pack = {
+        "site_url": base + "/deals",
+        "site_description": (
+            "A price-tracking deals publisher: every listed offer carries a "
+            "verified price history, 'LOWEST EVER' badges from our own engine, "
+            f"and the mandatory affiliate disclosure. Updated continuously "
+            f"({len(posts)} live deal posts)."),
+        "posts_count": len(posts),
+        "posts": [{"title": p["title"], "url": f"{base}/deals/{p['id']}"} for p in posts],
+        "social_pages": ([f"https://t.me/{tg}"] if tg else []),
+        "legal_urls": {
+            "disclosure": f"{base}/disclosure",
+            "privacy": f"{base}/privacy",
+            "terms": f"{base}/terms",
+        },
+        "signup_url": "https://affiliate-program.amazon.in/",
+        "ready_to_apply": client_ready_flag(),
+    }
+    return jsonify({"status": "success", **pack})
+
+
+def client_ready_flag():
+    try:
+        with app.test_request_context():
+            return bool(_readiness_checks()[1])
+    except Exception:
+        return False
+
+
+def _readiness_checks():
+    import config as cfg
+    conn = get_db()
+    published = conn.execute(
+        "SELECT COUNT(*) FROM campaigns WHERE status='published'").fetchone()[0]
+    tag_cfg = bool(cfg.AMAZON_ASSOCIATE_TAG) and \
+        "your_" not in str(cfg.AMAZON_ASSOCIATE_TAG).lower()
+    grievance = (db_manager.get_operator_setting("grievance_name", ""),
+                 db_manager.get_operator_setting("grievance_contact", ""))
+    pbu = db_manager.get_system_setting("public_base_url", "")
+    checks = {
+        "posts_published_ge_10": published >= 10,
+        "affiliate_tag_configured": tag_cfg,
+        "telegram_channel_ready": config.has_telegram(),
+        "disclosure_page_live": True,
+        "privacy_page_live": True,
+        "grievance_contact_set": bool(grievance[0] and grievance[1]),
+        "https_public_url": str(pbu).lower().startswith("https://"),
+        "postback_secret_rotated": not str(db_manager.get_postback_secret()).startswith("change_me"),
+    }
+    return checks, all(checks.values()), published
+
+
+@app.route("/api/compliance/spot_check/run", methods=["POST"])
+@login_required
+@limiter.limit("6 per hour")
+def api_spot_check_run():
+    """Run one automated verification cycle right now (PA-API when available)."""
+    if current_user.role != "admin":
+        return jsonify({"status": "error", "message": "Admin role required"}), 403
+    try:
+        from bots.spot_checker import run_cycle
+        result = run_cycle(force=True)
+        return jsonify({"status": "success", **result})
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @app.route("/api/background/status")
