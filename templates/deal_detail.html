@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ deal.title if deal else 'Deal not found' }}{% endblock %}
+
+{% block content %}
+{% if deal %}
+<script type="application/ld+json">{{ json_ld|tojson }}</script>
+
+<div class="panel deal-detail">
+  <div class="flex-between">
+    <h2>{{ deal.title }}</h2>
+    {% if deal.lowest_ever %}<span class="badge red">📉 LOWEST EVER</span>{% endif %}
+  </div>
+
+  <p class="hint">
+    Sector: {{ deal.sector|capitalize }} ·
+    Tracked since {{ (deal.created_at or '')[:10] }} ·
+    Deal score {{ deal.deal_score|int }}/100
+  </p>
+
+  {% if image_url %}
+  <img src="{{ image_url }}" alt="{{ deal.title }}" style="max-width:420px;width:100%;border-radius:12px;margin:16px 0;border:1px solid var(--border)">
+  {% endif %}
+
+  <div class="deal-prices" style="font-size:22px">
+    <span class="deal-price">₹{{ '%.0f'|format(deal.price) }}</span>
+    {% if deal.mrp and deal.mrp > deal.price %}
+    <span class="deal-mrp">₹{{ '%.0f'|format(deal.mrp) }}</span>
+    <span class="badge green">{{ ((1 - deal.price / deal.mrp) * 100)|round|int }}% OFF</span>
+    {% elif deal.discount %}
+    <span class="badge green">{{ deal.discount|int }}% OFF</span>
+    {% endif %}
+  </div>
+
+  <p class="hint mt">Price verified by our tracking engine at publish time.
+  Amazon prices change frequently — the live price is what counts.</p>
+
+  <a class="btn primary mt" href="{{ go_url }}" rel="nofollow sponsored noopener"
+     style="display:inline-block;font-size:16px;padding:14px 28px">
+     View Live Price on Amazon →</a>
+
+  <p class="hint mt"><em>*Affiliate link — I may earn a commission at no extra cost to you.</em></p>
+  <p class="mt"><a href="/deals">← All hot deals</a></p>
+</div>
+{% else %}
+<div class="panel">
+  <h2>Deal not found</h2>
+  <p class="hint">This deal may have expired or is awaiting review.</p>
+  <p class="mt"><a href="/deals">← Back to all deals</a></p>
+</div>
+{% endif %}
+{% endblock %}

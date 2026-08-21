@@ -539,6 +539,94 @@ resp = client.post("/api/scheduler_run_now", json={"job_id": "video_trash_collec
 check("scheduler_run_now API executes job", resp.status_code == 200 and resp.get_json().get("status") == "success")
 
 # ═════════════════════════════════════════════════════════════════════════════
+# K. REVENUE ENGINE — deal scoring, deal format, cards, public SEO site, clock
+# ═════════════════════════════════════════════════════════════════════════════
+section("K. Revenue Engine (free stack)")
+from bots.deal_scorer import score_deal, rank_deals  # noqa: E402
+from generators.ai_copywriter import generate_deal_post  # noqa: E402
+from generators.deal_card import render_deal_card  # noqa: E402
+
+# Price history + lowest-ever detection.
+db_manager.record_price("SCORE-1", 2999.0)
+db_manager.record_price("SCORE-1", 2799.0)
+p = {"id": "SCORE-1", "title": "Test Fan", "price": 2599.0, "discount": 27}
+score_deal(p, record=True)
+check("price history recorded during scoring", db_manager.get_price_stats("SCORE-1")["samples"] == 3)
+check("lowest-ever detected on new minimum", p["is_lowest_ever"] is True)
+check("deal score in 0-100 bounds", 0 <= p["deal_score"] <= 100 and p["badge"] == "LOWEST EVER")
+check("MRP implied from discount field", p["mrp"] and p["mrp"] > p["price"])
+
+p2 = score_deal({"id": "SCORE-2", "title": "Meh product", "price": 999.0, "discount": 5}, record=True)
+check("weak deal gets low/no badge", p2["deal_score"] < 35)
+
+ranked = rank_deals([{"deal_score": 10}, {"deal_score": 90}])
+check("rank_deals sorts best-first", ranked[0]["deal_score"] == 90)
+
+# Proven deal-format caption.
+post = generate_deal_post(p)
+check("deal post has price drop header", "PRICE DROP" in post)
+check("deal post shows rupee price", "\u20b92,599" in post)
+check("deal post strikes MRP with % OFF", "~~" in post and "% OFF" in post)
+check("deal post carries ASCI disclosure", "no extra cost" in post)
+
+# Forwardable card.
+card_path = render_deal_card(p)
+check("deal card PNG rendered to static path",
+      card_path.startswith("/static/campaigns/") and os.path.exists(os.path.join(PROJECT_ROOT, card_path.lstrip("/"))))
+
+# Pipeline persists scored fields.
+conn = sqlite3.connect(DB_PATH)
+crow = conn.execute(
+    "SELECT mrp, deal_score, lowest_ever, caption, graphic_path FROM campaigns ORDER BY id LIMIT 1"
+).fetchone()
+conn.close()
+check("campaigns store mrp/deal_score/lowest_ever",
+      crow is not None and crow[2] in (0, 1) and crow[1] >= 0)
+check("campaign caption uses deal format", crow is not None and "PRICE DROP" in (crow[3] or ""))
+check("campaign graphic uses deal card", crow is not None and "/static/campaigns/deal_" in (crow[4] or ""))
+
+# Public SEO pages (anonymous access).
+anon = app_module.app.test_client()
+resp = anon.get("/deals")
+body = resp.get_data(as_text=True)
+check("public /deals renders anonymously", resp.status_code == 200)
+check("public deals list shows published titles", "Premium headphones" in body or "deal-card" in body)
+pub_id = sqlite3.connect(DB_PATH).execute(
+    "SELECT id FROM campaigns WHERE status='published' LIMIT 1").fetchone()[0]
+resp = anon.get(f"/deals/{pub_id}")
+detail = resp.get_data(as_text=True)
+check("public deal detail renders", resp.status_code == 200)
+check("JSON-LD Product schema present", 'application/ld+json' in detail and '"@type": "Product"' in detail.replace("'", '"'))
+check("sponsored rel on affiliate CTA", "nofollow sponsored" in detail)
+resp = anon.get(f"/deals/999999")
+check("unknown deal returns 404 page", resp.status_code == 404)
+sm = anon.get("/sitemap.xml")
+check("sitemap lists deal URLs", sm.status_code == 200 and "/deals" in sm.get_data(as_text=True))
+rb = anon.get("/robots.txt")
+check("robots.txt served", rb.status_code == 200 and "Sitemap:" in rb.get_data(as_text=True))
+
+# Revenue clock: set application date via settings POST.
+resp = client.post("/settings", data={
+    "auto_publish_timeout": "30",
+    "primary_routing_domain": "https://www.amazon.in",
+    "public_base_url": "https://deals.example.com",
+    "associates_applied_at": "2026-08-01",
+    "postback_secret": "",
+    "commission_rates": "{}",
+})
+clock = client.get("/api/revenue_clock").get_json()
+check("revenue clock reads applied date", clock.get("applied_at") == "2026-08-01")
+check("revenue clock counts qualifying sales", clock.get("qualifying_sales") >= 1)
+check("revenue clock computes days left", isinstance(clock.get("days_left"), int) and clock["days_left"] <= 180)
+check("urgent flag when behind schedule", clock.get("on_track") is not None)
+
+# Channel P&L present in performance payload.
+perf = client.get("/api/performance").get_json()
+ch_rows = (perf.get("stats") or {}).get("by_channel") or []
+check("channel P&L populated with commission column",
+      len(ch_rows) >= 1 and "commission" in ch_rows[0] and ch_rows[0]["clicks"] >= 1)
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════════════════════════════
 print(f"\n{'=' * 70}")

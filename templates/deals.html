@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Hot Deals{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <h2>🔥 Hot Deals — Verified Price Drops</h2>
+  <p class="hint" style="margin-bottom:14px">
+    Every deal below is tracked by our price engine. "LOWEST EVER" badges mark
+    the cheapest price we have ever recorded for that product.
+    <em>*Affiliate link — I may earn a commission at no extra cost to you.</em>
+  </p>
+
+  {% if deals %}
+  <div class="deals-grid">
+    {% for d in deals %}
+    <a class="deal-card" href="/deals/{{ d.id }}">
+      {% if d.lowest_ever %}<span class="badge red">LOWEST EVER</span>
+      {% elif d.deal_score >= 55 %}<span class="badge amber">HOT DEAL</span>{% endif %}
+      <div class="deal-title">{{ d.title }}</div>
+      <div class="deal-prices">
+        <span class="deal-price">₹{{ '%.0f'|format(d.price) }}</span>
+        {% if d.mrp and d.mrp > d.price %}
+        <span class="deal-mrp">₹{{ '%.0f'|format(d.mrp) }}</span>
+        {% endif %}
+        {% if d.discount %}<span class="badge green">{{ d.discount|int }}% OFF</span>{% endif %}
+      </div>
+      <div class="hint">{{ d.sector|capitalize }} · score {{ d.deal_score|int }}</div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="hint">No published deals yet — run the content pipeline from the dashboard.</p>
+  {% endif %}
+</div>
+{% endblock %}

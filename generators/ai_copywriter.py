@@ -120,6 +120,73 @@ def _audit_and_fix(copies):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PROVEN DEAL FORMAT — the format real Indian deals channels convert with
+# ─────────────────────────────────────────────────────────────────────────────
+def _inr(amount):
+    """Format a number as Indian-style rupee string (1,23,456.00)."""
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+    whole = int(round(amount))
+    s = str(whole)
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        s = ",".join(parts + [tail])
+    return f"₹{s}"
+
+
+def generate_deal_post(product):
+    """
+    Build the high-converting deal-alert caption from scored product fields.
+
+    Deterministic and offline-free: uses price/MRP/badge data produced by
+    ``bots/deal_scorer.py`` — no generative API required. Always ends with
+    the mandated ASCI disclosure.
+    """
+    title = _safe(product, "title", "Featured product")
+    price = float(_safe(product, "price", 0) or 0)
+    mrp = product.get("mrp")
+    badge = product.get("badge", "")
+    sector = _safe(product, "sector", "deals")
+
+    lines = ["🔥 PRICE DROP ALERT", ""]
+    if badge:
+        lines += [f"⚠️ {badge} on this channel!", ""]
+    lines.append(title)
+
+    if price > 0:
+        price_line = f"💰 Now {_inr(price)}"
+        if mrp and float(mrp) > price:
+            pct = round((float(mrp) - price) / float(mrp) * 100)
+            price_line += f" ~~{_inr(mrp)}~~ ({pct}% OFF)"
+        elif _safe(product, "discount"):
+            price_line += f" ({int(float(product['discount']))}% OFF)"
+        lines += ["", price_line]
+
+    if product.get("is_lowest_ever"):
+        lines += ["📉 Lowest price we have ever tracked!"]
+    lines += ["⏳ Limited-period offer — stock moves fast."]
+
+    lines += [
+        "",
+        "🛒 Check live price & grab it here 👇",
+        "",
+        ASCI_DISCLOSURE_EN,
+        "",
+        f"#Deals #{sector.replace(' ', '')} #AmazonIndia",
+    ]
+    text = "\n".join(lines)
+    return _ensure_disclosure(text, "en")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_multilingual_copy(product):

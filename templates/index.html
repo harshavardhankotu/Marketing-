@@ -27,6 +27,36 @@
     </div>
   </div>
 
+  <div class="grid grid-2 mt" id="clock-row" style="display:none">
+    <div class="panel">
+      <div class="flex-between">
+        <h2>⏳ Associates 180-Day Clock</h2>
+        <span class="badge cyan" id="clock-state">—</span>
+      </div>
+      <div class="stat">
+        <div class="label">Qualifying Sales</div>
+        <div class="value"><span id="clock-sales">0</span><span class="hint"> / 3 required</span></div>
+      </div>
+      <div style="background:var(--bg-elevated);border-radius:999px;height:14px;margin:12px 0;overflow:hidden">
+        <div id="clock-bar" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
+      </div>
+      <div class="flex-between hint">
+        <span>Days left: <b id="clock-days">—</b></span>
+        <span>Daily rate: <b id="clock-rate">—</b></span>
+      </div>
+      <p class="hint mt">Amazon closes the account permanently if 3 qualifying sales don't land within 180 days of applying.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Channel P&amp;L — What Actually Earns</h2>
+      <table>
+        <thead><tr><th>Channel</th><th>Clicks</th><th>Conv</th><th>CVR</th><th>₹ Commission</th></tr></thead>
+        <tbody id="channel-pnl"></tbody>
+      </table>
+      <div class="hint mt">Double-down on channels with real commission; cut the rest.</div>
+    </div>
+  </div>
+
   <div class="grid grid-2 mt">
     <div class="panel">
       <div class="flex-between">
@@ -97,6 +127,23 @@ async function loadSectors() {
   sel.innerHTML = (data || []).map(s => `<option value="${esc(s.key)}">${esc(s.display)}</option>`).join('');
 }
 
+async function loadRevenueClock() {
+  try {
+    const data = await getJSON('/api/revenue_clock');
+    if (data.status !== 'success' || !data.applied_at) return;
+    document.getElementById('clock-row').style.display = '';
+    document.getElementById('clock-sales').textContent = data.qualifying_sales ?? 0;
+    const pct = Math.min(((data.qualifying_sales || 0) / data.sales_required) * 100, 100);
+    document.getElementById('clock-bar').style.width = pct + '%';
+    document.getElementById('clock-days').textContent = data.days_left + ' days';
+    document.getElementById('clock-rate').textContent = (data.daily_sales_rate ?? 0) + '/day';
+    const state = document.getElementById('clock-state');
+    if (data.urgent) { state.textContent = 'URGENT'; state.className = 'badge red'; }
+    else if (data.on_track) { state.textContent = 'ON TRACK'; state.className = 'badge green'; }
+    else { state.textContent = 'BEHIND'; state.className = 'badge amber'; }
+  } catch (e) { /* non-fatal */ }
+}
+
 async function loadPerformance() {
   const data = await getJSON('/api/performance');
   if (data.status !== 'success') return;
@@ -127,6 +174,12 @@ async function loadPerformance() {
   document.getElementById('alerts-box').innerHTML = alerts.map(a =>
     `<div><span class="status-dot ${a.level === 'error' ? 'err' : a.level === 'warning' ? 'warn' : 'ok'}"></span>${esc(a.message)}</div>`
   ).join('') || '<span class="hint">No recent alerts.</span>';
+
+  // Channel P&L.
+  const ch = (data.stats || {}).by_channel || [];
+  document.getElementById('channel-pnl').innerHTML = ch.map(c =>
+    `<tr><td>${esc(c.channel)}</td><td>${c.clicks}</td><td>${c.conversions}</td><td>${((c.conversion_rate || 0) * 100).toFixed(1)}%</td><td>₹${(c.commission || 0).toFixed(2)}</td></tr>`
+  ).join('') || '<tr><td colspan="5" class="hint">No channel data yet — share tracked /go/ links with ?channel=telegram etc.</td></tr>';
 }
 
 async function loadReliability() {
@@ -177,7 +230,9 @@ loadSectors();
 loadPerformance();
 loadReliability();
 loadDLQ();
+loadRevenueClock();
 setInterval(loadPerformance, 15000);
 setInterval(loadReliability, 30000);
+setInterval(loadRevenueClock, 60000);
 </script>
 {% endblock %}

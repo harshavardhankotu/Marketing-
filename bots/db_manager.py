@@ -203,6 +203,20 @@ SCHEMA_STATEMENTS = [
         failed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    # 14. Price history — the free "lowest ever" engine (our own observations)
+    """
+    CREATE TABLE IF NOT EXISTS price_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id  TEXT,
+        price       REAL,
+        mrp         REAL,
+        seen_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_price_history_product
+        ON price_history (product_id, seen_at)
+    """,
 ]
 
 # Seed rows for system_settings (spec section B item 5)
@@ -224,6 +238,9 @@ def _migrate_schema(cursor):
     _ALTER_STATEMENTS = [
         ("campaigns", "caption", "TEXT"),
         ("campaigns", "graphic_path", "TEXT"),
+        ("campaigns", "mrp", "REAL"),
+        ("campaigns", "deal_score", "REAL DEFAULT 0"),
+        ("campaigns", "lowest_ever", "INTEGER DEFAULT 0"),
         ("affiliate_clicks", "session_id", "TEXT"),
     ]
     for table, column, col_type in _ALTER_STATEMENTS:
@@ -331,8 +348,8 @@ def save_campaign(campaign_data, sector="electronics"):
             """
             INSERT INTO campaigns
                 (product_id, title, sector, target_url, price, discount, commission,
-                 caption, graphic_path, status, publish_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
+                 caption, graphic_path, mrp, deal_score, lowest_ever, status, publish_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
             """,
             (
                 campaign_data.get("id") or campaign_data.get("product_id"),
@@ -344,6 +361,9 @@ def save_campaign(campaign_data, sector="electronics"):
                 float(campaign_data.get("commission", 0) or 0),
                 campaign_data.get("caption", ""),
                 campaign_data.get("graphic_path", ""),
+                float(campaign_data["mrp"]) if campaign_data.get("mrp") else None,
+                float(campaign_data.get("deal_score", 0) or 0),
+                1 if campaign_data.get("lowest_ever") else 0,
                 publish_at,
             ),
         )
@@ -419,6 +439,54 @@ def count_campaigns():
     conn = _connection()
     try:
         return conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRICE HISTORY — the free "lowest ever" engine
+# ─────────────────────────────────────────────────────────────────────────────
+def record_price(product_id, price, mrp=None):
+    """Store a price observation for a product. Returns the row id."""
+    conn = _connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO price_history (product_id, price, mrp) VALUES (?, ?, ?)",
+            (product_id, float(price), float(mrp) if mrp else None),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_price_stats(product_id):
+    """
+    Return {min, max, avg, last, samples} over recorded observations,
+    or None when nothing has been recorded yet.
+    """
+    conn = _connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT MIN(price), MAX(price), AVG(price),
+                   (SELECT price FROM price_history WHERE product_id = ?
+                    ORDER BY id DESC LIMIT 1),
+                   COUNT(*)
+            FROM price_history WHERE product_id = ?
+            """,
+            (product_id, product_id),
+        ).fetchone()
+        if not row or row[4] == 0:
+            return None
+        return {
+            "min": float(row[0]),
+            "max": float(row[1]),
+            "avg": float(row[2]),
+            "last": float(row[3]) if row[3] is not None else None,
+            "samples": int(row[4]),
+        }
     finally:
         conn.close()
 

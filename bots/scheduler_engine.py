@@ -40,12 +40,14 @@ _STARTED = False
 # ─────────────────────────────────────────────────────────────────────────────
 def content_sweep(sector=None):
     """
-    Source products for a vertical, generate copy + video assets, and persist
-    them as pending campaigns. Falls back gracefully when APIs are absent.
+    Source products for a vertical, score deal quality, compose proven
+    deal-format captions + forwardable deal cards, and persist them as
+    pending campaigns ranked best-first.
     """
     from scrapers.product_scraper import fetch_active_campaigns
-    from generators.ai_copywriter import generate_multilingual_copy
-    from generators.video_script_engine import render_video_clip, generate_video_scripts
+    from generators.ai_copywriter import generate_deal_post
+    from generators.deal_card import render_deal_card
+    from bots.deal_scorer import score_deal, rank_deals
     from db_manager import save_campaign
 
     if sector is None:
@@ -62,19 +64,21 @@ def content_sweep(sector=None):
             print(f"[SCHEDULER] Sourcing failed for {sec}: {exc}")
             continue
 
+        # Score first, then persist best deals first (hot deals win the queue).
+        products = [score_deal(p) for p in products]
+        products = rank_deals(products)
+
         for idx, product in enumerate(products):
             try:
                 product["sector"] = sec
-                copies = generate_multilingual_copy(product)
-                product["caption"] = copies.get("en", "")
-                product["copy"] = copies
-
-                script = generate_video_scripts(product)
-                product["graphic_path"] = render_video_clip(product, script)
                 product["commission"] = product.get("commission", 0.03)
+                product["caption"] = generate_deal_post(product)
+                product["graphic_path"] = render_deal_card(product)
 
                 save_campaign(product, sector=sec)
                 total_saved += 1
+                badge = product.get("badge") or "scored"
+                print(f"[SCHEDULER] Saved [{badge} {product.get('deal_score', 0)}] {product.get('title', '')[:50]}")
             except Exception as exc:
                 print(f"[SCHEDULER] Failed to compose product {idx} in {sec}: {exc}")
 

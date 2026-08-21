@@ -261,3 +261,35 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--c
 .flex-between { display: flex; align-items: center; justify-content: space-between; }
 .login-card { max-width: 420px; margin: 80px auto; }
 .login-card h1 { font-size: 18px; margin-bottom: 20px; }
+
+/* ── Public deals site ────────────────────────────────────────────────────── */
+.deals-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+@media (max-width: 900px) { .deals-grid { grid-template-columns: 1fr; } }
+.deal-card {
+  display: block;
+  background: rgba(26, 32, 48, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  color: var(--text);
+  transition: transform .15s ease, border-color .15s ease;
+}
+.deal-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  text-decoration: none;
+}
+.deal-card .deal-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin: 10px 0;
+  min-height: 44px;
+}
+.deal-prices { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.deal-price { font-size: 24px; font-weight: 800; color: var(--accent); }
+.deal-mrp { text-decoration: line-through; color: var(--text-dim); }
+.deal-detail img { border: 1px solid var(--border); }

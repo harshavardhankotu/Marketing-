@@ -200,10 +200,28 @@ def get_click_stats(limit=50):
         )
         top = [dict(r) for r in cursor.fetchall()]
 
+        # Per-channel P&L: clicks per channel, plus conversions/commission
+        # attributed back through session_id -> the channel that click came from.
         cursor.execute(
-            "SELECT channel, COUNT(*) AS clicks FROM affiliate_clicks WHERE is_bot = 0 GROUP BY channel"
+            """
+            SELECT ac.channel,
+                   COUNT(DISTINCT ac.id) AS clicks,
+                   COUNT(DISTINCT conv.id) AS conversions,
+                   COALESCE(SUM(conv.commission_amount), 0) AS commission
+            FROM affiliate_clicks ac
+            LEFT JOIN affiliate_conversions conv
+                   ON conv.session_id = ac.session_id AND conv.status = 'converted'
+            WHERE ac.is_bot = 0
+            GROUP BY ac.channel
+            ORDER BY commission DESC, clicks DESC
+            """
         )
-        by_channel = [dict(r) for r in cursor.fetchall()]
+        by_channel = []
+        for r in cursor.fetchall():
+            row = dict(r)
+            row["commission"] = round(row["commission"] or 0, 2)
+            row["conversion_rate"] = round(row["conversions"] / row["clicks"], 4) if row["clicks"] else 0.0
+            by_channel.append(row)
 
         cursor.execute(
             "SELECT sector, COUNT(*) AS clicks FROM affiliate_clicks c JOIN campaigns g ON c.product_id = g.product_id "

@@ -74,9 +74,12 @@ class HardenedJSONProvider(DefaultJSONProvider):
 app.json = HardenedJSONProvider(app)
 
 # Session cookie hardening (common-sense web security).
+# NOTE: SESSION_COOKIE_SECURE must stay OFF for plain-HTTP deployments
+# (localhost, IP:80 behind Caddy pre-TLS) — secure cookies are never sent
+# back over http://, which silently breaks login. Enable when serving HTTPS.
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = not os.getenv("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes")
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "False").strip().lower() in ("1", "true", "yes")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,6 +282,9 @@ def settings_page():
         try:
             db_manager.set_system_setting("auto_publish_timeout", request.form.get("auto_publish_timeout", "30"))
             db_manager.set_system_setting("primary_routing_domain", request.form.get("primary_routing_domain", "").strip())
+            db_manager.set_system_setting("public_base_url", request.form.get("public_base_url", "").strip())
+            db_manager.set_system_setting(
+                "associates_applied_at", request.form.get("associates_applied_at", "").strip())
             db_manager.set_operator_setting("postback_secret", request.form.get("postback_secret", "").strip())
             rates_raw = request.form.get("commission_rates", "{}")
             json.loads(rates_raw)  # validate
@@ -290,6 +296,8 @@ def settings_page():
     settings = {
         "auto_publish_timeout": db_manager.get_system_setting("auto_publish_timeout", "30"),
         "primary_routing_domain": db_manager.get_system_setting("primary_routing_domain", ""),
+        "public_base_url": db_manager.get_system_setting("public_base_url", ""),
+        "associates_applied_at": db_manager.get_system_setting("associates_applied_at", ""),
         "postback_secret": db_manager.get_postback_secret(),
         "commission_rates": db_manager.get_operator_setting("commission_rates", "{}"),
     }
@@ -528,8 +536,9 @@ def api_sectors():
 def api_run_pipeline():
     try:
         from scrapers.product_scraper import fetch_active_campaigns, SECTOR_CONFIG
-        from generators.ai_copywriter import generate_multilingual_copy
-        from generators.video_script_engine import render_video_clip, generate_video_scripts
+        from generators.ai_copywriter import generate_deal_post
+        from generators.deal_card import render_deal_card
+        from bots.deal_scorer import score_deal, rank_deals
 
         data = request.json or {}
         sector = data.get("sector", "electronics")
@@ -537,21 +546,25 @@ def api_run_pipeline():
             return jsonify({"status": "error", "message": f"Invalid sector '{sector}'"}), 400
 
         products = fetch_active_campaigns(sector)
+        # Score deal quality, then persist best deals first.
+        products = [score_deal(p) for p in products]
+        products = rank_deals(products)
+
         saved = 0
         for product in products:
             product["sector"] = sector
-            copies = generate_multilingual_copy(product)
-            product["caption"] = copies.get("en", "")
-            product["copy"] = copies
-            script = generate_video_scripts(product)
-            product["graphic_path"] = render_video_clip(product, script)
+            product["caption"] = generate_deal_post(product)
+            product["graphic_path"] = render_deal_card(product)
             db_manager.save_campaign(product, sector=sector)
             saved += 1
 
+        top_badge = products[0].get("badge", "") if products else ""
         return jsonify({
             "status": "success",
             "sector": sector,
             "campaigns_created": saved,
+            "top_badge": top_badge,
+            "top_score": products[0].get("deal_score", 0) if products else 0,
             "run_at": datetime.utcnow().isoformat(),
         })
     except Exception as exc:
@@ -732,6 +745,132 @@ def serve_campaign_asset(filename):
     from config import CAMPAIGN_STATIC_DIR
     from flask import send_from_directory
     return send_from_directory(CAMPAIGN_STATIC_DIR, filename)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC SEO DEAL SITE — the Amazon-Associates application asset.
+# Public, indexable deal pages satisfy the "established website with robust
+# original content" participation requirement AND compound Google traffic.
+# ─────────────────────────────────────────────────────────────────────────────
+def _public_base_url():
+    return db_manager.get_system_setting("public_base_url", "") or request.url_root.rstrip("/")
+
+
+@app.route("/deals")
+def deals_public():
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT id, product_id, title, sector, price, mrp, discount, deal_score,
+               lowest_ever, graphic_path, created_at
+        FROM campaigns WHERE status = 'published'
+        ORDER BY deal_score DESC, created_at DESC LIMIT 60
+        """
+    ).fetchall()
+    deals = [dict(r) for r in rows]
+    return render_template("deals.html", deals=deals, base_url=_public_base_url())
+
+
+@app.route("/deals/<int:campaign_id>")
+def deal_detail(campaign_id):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM campaigns WHERE id = ? AND status = 'published'", (campaign_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return render_template("deal_detail.html", deal=None, json_ld=None, base_url=_public_base_url()), 404
+    deal = dict(row)
+    go_url = f"/go/{deal['product_id']}?url={deal['target_url']}&title={deal['title']}&sector={deal['sector']}&channel=site"
+    image_url = f"{_public_base_url()}{deal['graphic_path']}" if deal.get("graphic_path") else ""
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": deal["title"],
+        "category": deal.get("sector") or "",
+        "image": image_url or None,
+        "offers": {
+            "@type": "Offer",
+            "priceCurrency": "INR",
+            "price": f"{float(deal.get('price') or 0):.2f}",
+            "availability": "https://schema.org/InStock",
+            "url": f"{_public_base_url()}/deals/{deal['id']}",
+        },
+    }
+    return render_template("deal_detail.html", deal=deal, go_url=go_url,
+                           image_url=image_url, json_ld=json_ld, base_url=_public_base_url())
+
+
+@app.route("/sitemap.xml")
+def sitemap_xml():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id FROM campaigns WHERE status='published' ORDER BY id DESC LIMIT 500"
+    ).fetchall()
+    conn.close()
+    base = _public_base_url().rstrip("/")
+    urls = [f"{base}/deals"] + [f"{base}/deals/{r[0]}" for r in rows]
+    body = ['<?xml version="1.0" encoding="UTF-8"?>']
+    body.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for u in urls:
+        body.append(f"  <url><loc>{u}</loc><lastmod>{today}</lastmod></url>")
+    body.append("</urlset>")
+    return Response("\n".join(body), mimetype="application/xml")
+
+
+@app.route("/robots.txt")
+def robots_txt():
+    base = _public_base_url().rstrip("/")
+    body = f"User-agent: *\nAllow: /\nDisallow: /settings\nDisallow: /api/\n\nSitemap: {base}/sitemap.xml\n"
+    return Response(body, mimetype="text/plain")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REVENUE CLOCK — the Amazon Associates 180-day / 3-sale survival tracker
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/revenue_clock")
+@login_required
+def api_revenue_clock():
+    from datetime import date, timedelta as _td
+
+    applied_raw = db_manager.get_system_setting("associates_applied_at", "")
+    conn = get_db()
+    sales = conn.execute(
+        "SELECT COUNT(*) FROM affiliate_conversions WHERE status='converted'"
+    ).fetchone()[0]
+    commission = conn.execute(
+        "SELECT COALESCE(SUM(commission_amount), 0) FROM affiliate_conversions WHERE status='converted'"
+    ).fetchone()[0]
+    conn.close()
+
+    required = 3
+    window_days = 180
+    out = {
+        "status": "success",
+        "applied_at": applied_raw or None,
+        "qualifying_sales": sales,
+        "sales_required": required,
+        "total_commission": float(commission),
+    }
+    if applied_raw:
+        try:
+            applied = date.fromisoformat(str(applied_raw)[:10])
+            elapsed = (date.utcnow() if hasattr(date, "utcnow") else datetime.utcnow().date()) - applied
+            elapsed_days = max(elapsed.days, 0)
+            days_left = max(window_days - elapsed_days, 0)
+            daily_rate = sales / elapsed_days if elapsed_days else (sales or 0)
+            out.update({
+                "days_elapsed": elapsed_days,
+                "days_left": days_left,
+                "daily_sales_rate": round(daily_rate, 3),
+                "projected_by_deadline": min(int(daily_rate * days_left) + sales, required) if daily_rate else sales,
+                "on_track": sales >= required or daily_rate * days_left >= max(required - sales, 0),
+                "urgent": sales < required and days_left <= 45,
+            })
+        except ValueError:
+            out["parse_error"] = True
+    return jsonify(out)
 
 
 @app.route("/api/background/status")

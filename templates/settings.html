@@ -22,6 +22,20 @@
       </div>
 
       <div class="field">
+        <label for="public_base_url">Public Site URL (for SEO pages + sitemap)</label>
+        <input id="public_base_url" name="public_base_url"
+               value="{{ settings.public_base_url }}" placeholder="https://deals.yourdomain.com">
+        <span class="hint">Public /deals pages double as your Amazon Associates application site.</span>
+      </div>
+
+      <div class="field">
+        <label for="associates_applied_at">Associates Application Date (starts 180-day / 3-sale clock)</label>
+        <input type="date" id="associates_applied_at" name="associates_applied_at"
+               value="{{ settings.associates_applied_at }}">
+        <span class="hint">Set only when you actually apply. Amazon requires 3 qualifying sales within 180 days or the account is permanently rejected.</span>
+      </div>
+
+      <div class="field">
         <label for="postback_secret">Postback HMAC Secret</label>
         <input id="postback_secret" name="postback_secret" value="{{ settings.postback_secret }}">
         <span class="hint">Must match the secret your affiliate network signs postbacks with.</span>
