@@ -36,6 +36,18 @@
       </div>
 
       <div class="field">
+        <label for="grievance_name">Grievance Contact Name (DPDP §8 — shown on /privacy)</label>
+        <input id="grievance_name" name="grievance_name"
+               value="{{ settings.grievance_name }}" placeholder="e.g. Harsha V — Operator">
+      </div>
+
+      <div class="field">
+        <label for="grievance_contact">Grievance Contact (email or handle)</label>
+        <input id="grievance_contact" name="grievance_contact"
+               value="{{ settings.grievance_contact }}" placeholder="grievances@yourdomain.in">
+      </div>
+
+      <div class="field">
         <label for="postback_secret">Postback HMAC Secret</label>
         <input id="postback_secret" name="postback_secret" value="{{ settings.postback_secret }}">
         <span class="hint">Must match the secret your affiliate network signs postbacks with.</span>

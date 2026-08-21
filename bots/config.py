@@ -143,6 +143,14 @@ DEDUPE_DAYS = int(os.getenv('DEDUPE_DAYS', '7'))
 # minimum (a genuine "further drop" re-alert worth sending).
 REALERT_DROP_PCT = float(os.getenv('REALERT_DROP_PCT', '2.0'))
 
+# ── OPERATOR DUTY ASSISTS ─────────────────────────────────────────────────────
+# GST registration watch-point for commission income (services threshold INR).
+GST_THRESHOLD = float(os.getenv('GST_THRESHOLD', '2000000'))
+# Monthly price spot-check cadence (days) required by claim-substantiation duty.
+SPOT_CHECK_DAYS = int(os.getenv('SPOT_CHECK_DAYS', '30'))
+# Default admin password marker used to flag "still stock" credentials.
+_ADMIN_PASSWORD_DEFAULT = 'admin123'
+
 
 def _credential_ok(value):
     """True when a credential was actually supplied (not a placeholder)."""

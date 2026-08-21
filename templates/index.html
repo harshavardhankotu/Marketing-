@@ -139,7 +139,29 @@
   </div>
 
   <div class="panel mt">
-    <h2>Dead-Letter Queue</h2>
+    <div class="flex-between">
+      <h2>🧭 Operator Duties Console</h2>
+      <span id="duty-ready" class="badge amber">CHECKING…</span>
+    </div>
+    <div class="grid grid-2">
+      <ul class="hint" id="duty-list" style="padding-left:18px"></ul>
+      <div>
+        <div class="stat">
+          <div class="label">Monthly Price Spot-Check</div>
+          <div class="value" style="font-size:20px" id="spot-status">—</div>
+        </div>
+        <button class="btn mt" id="spot-btn" style="width:100%">Log Spot-Check (after reviewing /deals)</button>
+        <div class="stat mt">
+          <div class="label">GST Watch (lifetime commission)</div>
+          <div class="value" style="font-size:20px" id="gst-status">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-2 mt">
+    <div class="panel">
+      <h2>Dead-Letter Queue</h2>
     <table>
       <thead><tr><th>Job ID</th><th>Type</th><th>Error</th><th>Failed At</th></tr></thead>
       <tbody id="dlq-table"></tbody>
@@ -363,6 +385,52 @@ document.getElementById('conv-import').addEventListener('click', async () => {
   } catch (e) { outEl.textContent = '✘ Invalid JSON.'; }
 });
 
+const DUTY_LABELS = {
+  posts_published_ge_10: '≥10 original posts published (Amazon content bar)',
+  affiliate_tag_configured: 'Associate tag configured (.env)',
+  telegram_channel_ready: 'Telegram bot + channel connected',
+  disclosure_page_live: '/disclosure live',
+  privacy_page_live: '/privacy live',
+  grievance_contact_set: 'Grievance officer set in Settings',
+  https_public_url: 'Public Site URL is HTTPS',
+  postback_secret_rotated: 'Postback secret rotated (not default)'
+};
+
+async function loadDuties() {
+  try {
+    const d = await getJSON('/api/readiness');
+    if (d.status !== 'success') return;
+    const list = document.getElementById('duty-list');
+    list.innerHTML = Object.entries(d.checks).map(([k, v]) =>
+      `<li style="${v ? '' : 'color:var(--amber)'}">${v ? '✅' : '⬜'} ${esc(DUTY_LABELS[k] || k)}</li>`).join('');
+    const badge = document.getElementById('duty-ready');
+    badge.textContent = d.ready_to_apply ? 'READY TO APPLY' : 'IN PROGRESS';
+    badge.className = 'badge ' + (d.ready_to_apply ? 'green' : 'amber');
+
+    const sp = d.spot_check || {};
+    document.getElementById('spot-status').textContent =
+      sp.due ? `DUE (${sp.days_since == null ? 'never done' : sp.days_since + 'd ago'})` : `OK — next in ${sp.cadence_days - (sp.days_since || 0)}d`;
+    document.getElementById('spot-status').style.color = sp.due ? 'var(--amber)' : 'var(--accent)';
+
+    const g = d.gst || {};
+    document.getElementById('gst-status').textContent =
+      '₹' + Number(g.total_commission || 0).toFixed(0) + ' / ₹' + Number(g.threshold || 0).toLocaleString('en-IN');
+    document.getElementById('gst-status').style.color = g.warning ? 'var(--red)' : 'var(--text)';
+  } catch (e) { /* non-fatal */ }
+}
+
+document.getElementById('spot-btn').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/compliance/spot_check', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+      body: JSON.stringify({ reviewed: 5, notes: 'manual review vs live prices' })
+    });
+    const data = await res.json();
+    if (data.status === 'success') loadDuties();
+  } catch (e) { /* non-fatal */ }
+});
+
 loadSectors();
 loadPerformance();
 loadReliability();
@@ -370,6 +438,7 @@ loadDLQ();
 loadRevenueClock();
 loadGrowth();
 loadShareKit();
+loadDuties();
 setInterval(loadPerformance, 15000);
 setInterval(loadReliability, 30000);
 setInterval(loadRevenueClock, 60000);

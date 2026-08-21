@@ -1058,6 +1058,69 @@ resp = client.get("/subscribe")
 check("public subscribe page renders", resp.status_code == 200 and "/subscribe" in resp.get_data(as_text=True))
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Q. OPERATOR DUTIES CONSOLE — readiness, grievance, auto-secure, GST, checks
+# ═════════════════════════════════════════════════════════════════════════════
+section("Q. Operator Duties Console")
+
+# Readiness payload structure + gating logic.
+resp = client.get("/api/readiness")
+rd = resp.get_json()
+check("readiness endpoint serves checks", resp.status_code == 200 and rd.get("status") == "success")
+expected_keys = {"posts_published_ge_10", "affiliate_tag_configured", "telegram_channel_ready",
+                 "disclosure_page_live", "privacy_page_live", "grievance_contact_set",
+                 "https_public_url", "postback_secret_rotated"}
+check("readiness covers all duty checks", expected_keys.issubset(set((rd.get("checks") or {}).keys())))
+check("ready_to_apply is conjunction of checks",
+      rd.get("ready_to_apply") == all((rd.get("checks") or {}).values()))
+check("spot-check due when never done", (rd.get("spot_check") or {}).get("due") is True)
+check("gst watch reports threshold state", isinstance((rd.get("gst") or {}).get("warning"), bool))
+
+# Grievance contact flows from Settings onto /privacy and /terms.
+client.post("/settings", data={
+    "auto_publish_timeout": "30", "primary_routing_domain": "https://www.amazon.in",
+    "public_base_url": "", "associates_applied_at": "",
+    "grievance_name": "Harsha V", "grievance_contact": "grievances@example.in",
+    "postback_secret": "", "commission_rates": "{}"})
+priv_html = anon.get("/privacy").get_data(as_text=True)
+terms_html = anon.get("/terms").get_data(as_text=True)
+check("grievance officer rendered on /privacy", "Harsha V" in priv_html and "grievances@example.in" in priv_html)
+check("grievance officer rendered on /terms", "grievances@example.in" in terms_html)
+
+# Auto-secure cookies: https public URL upgrades session cookie automatically.
+client.post("/settings", data={
+    "auto_publish_timeout": "30", "primary_routing_domain": "https://www.amazon.in",
+    "public_base_url": "https://deals.example.com", "associates_applied_at": "",
+    "grievance_name": "", "grievance_contact": "",
+    "postback_secret": "", "commission_rates": "{}"})
+resp = client.get("/")
+cookie_hdr = resp.headers.get("Set-Cookie", "") or ""
+anon2 = app_module.app.test_client()
+login_resp = anon2.get("/")
+check("secure cookie auto-enabled by https base url",
+      app_module.app.config["SESSION_COOKIE_SECURE"] is True)
+# Restore plain-http config so later suites stay consistent.
+client.post("/settings", data={
+    "auto_publish_timeout": "30", "primary_routing_domain": "https://www.amazon.in",
+    "public_base_url": "", "associates_applied_at": "",
+    "grievance_name": "", "grievance_contact": "",
+    "postback_secret": "", "commission_rates": "{}"})
+
+# Spot-check logging flips the due flag.
+resp = client.post("/api/compliance/spot_check", json={"reviewed": 5, "notes": "audit cycle"})
+check("spot-check logs successfully", resp.status_code == 200 and resp.get_json().get("status") == "success")
+rd2 = client.get("/api/readiness").get_json()
+check("spot-check no longer due after logging", (rd2.get("spot_check") or {}).get("due") is False)
+resp = client.post("/api/compliance/spot_check", json={"reviewed": 0})
+check("spot-check requires reviewed>0", resp.status_code == 400)
+viewer_login = None
+
+# Viewer cannot log compliance actions.
+client.get("/logout"); login("viewer", "viewer123")
+resp = client.post("/api/compliance/spot_check", json={"reviewed": 5})
+check("viewer blocked from spot-check logging", resp.status_code in (401, 403))
+client.get("/logout"); login()
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════════════════════════════
 print(f"\n{'=' * 70}")

@@ -77,10 +77,25 @@ app.json = HardenedJSONProvider(app)
 # Session cookie hardening (common-sense web security).
 # NOTE: SESSION_COOKIE_SECURE must stay OFF for plain-HTTP deployments
 # (localhost, IP:80 behind Caddy pre-TLS) — secure cookies are never sent
-# back over http://, which silently breaks login. Enable when serving HTTPS.
+# back over http://, which silently breaks login. It AUTO-ENABLES the moment
+# the operator sets an https:// Public Site URL, and can be force-enabled
+# via env for manual control.
+_SECURE_FORCED = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes")
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "False").strip().lower() in ("1", "true", "yes")
+app.config["SESSION_COOKIE_SECURE"] = _SECURE_FORCED
+
+
+@app.before_request
+def _auto_upgrade_secure_cookies():
+    """Operator-duty assist: https public URL ⇒ secure cookies, automatically."""
+    if _SECURE_FORCED:
+        return
+    try:
+        pbu = db_manager.get_system_setting("public_base_url", "")
+        app.config["SESSION_COOKIE_SECURE"] = str(pbu).lower().startswith("https://")
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -287,6 +302,10 @@ def settings_page():
             db_manager.set_system_setting(
                 "associates_applied_at", request.form.get("associates_applied_at", "").strip())
             db_manager.set_operator_setting("postback_secret", request.form.get("postback_secret", "").strip())
+            db_manager.set_operator_setting(
+                "grievance_name", request.form.get("grievance_name", "").strip())
+            db_manager.set_operator_setting(
+                "grievance_contact", request.form.get("grievance_contact", "").strip())
             rates_raw = request.form.get("commission_rates", "{}")
             json.loads(rates_raw)  # validate
             db_manager.set_operator_setting("commission_rates", rates_raw)
@@ -301,6 +320,8 @@ def settings_page():
         "associates_applied_at": db_manager.get_system_setting("associates_applied_at", ""),
         "postback_secret": db_manager.get_postback_secret(),
         "commission_rates": db_manager.get_operator_setting("commission_rates", "{}"),
+        "grievance_name": db_manager.get_operator_setting("grievance_name", ""),
+        "grievance_contact": db_manager.get_operator_setting("grievance_contact", ""),
     }
     return render_template("settings.html", settings=settings)
 
@@ -822,6 +843,18 @@ def sitemap_xml():
 LEGAL_UPDATED = datetime.utcnow().strftime("%d %B %Y")
 
 
+def _grievance_block():
+    """Grievance contact for legal pages; falls back to channel-bio wording."""
+    name = db_manager.get_operator_setting("grievance_name", "")
+    contact = db_manager.get_operator_setting("grievance_contact", "")
+    if name and contact:
+        return f"Grievance Officer: <strong>{html.escape(name)}</strong> — <strong>{html.escape(contact)}</strong>."
+    if contact:
+        return f"Grievance contact: <strong>{html.escape(contact)}</strong>."
+    return ("Grievance contact is published in the bio of our channels; "
+            "it can also be confirmed on the Terms of Use page.")
+
+
 @app.route("/disclosure")
 def legal_disclosure():
     return render_template("legal_disclosure.html", updated=LEGAL_UPDATED)
@@ -829,12 +862,14 @@ def legal_disclosure():
 
 @app.route("/privacy")
 def legal_privacy():
-    return render_template("legal_privacy.html", updated=LEGAL_UPDATED)
+    return render_template("legal_privacy.html", updated=LEGAL_UPDATED,
+                           grievance_block=_grievance_block())
 
 
 @app.route("/terms")
 def legal_terms():
-    return render_template("legal_terms.html", updated=LEGAL_UPDATED)
+    return render_template("legal_terms.html", updated=LEGAL_UPDATED,
+                           grievance_block=_grievance_block())
 
 
 @app.route("/robots.txt")
@@ -1192,6 +1227,105 @@ def api_newsletter_send():
                         "smtp_configured": bool(app.config.get("_SMTP_OK", True))})
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPERATOR DUTIES CONSOLE — readiness, grievance contact, spot-checks, GST
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/readiness")
+@login_required
+def api_readiness():
+    """
+    Amazon-Associates application readiness + standing compliance duties.
+    The operator applies only when every check is green.
+    """
+    try:
+        import config as cfg
+        conn = get_db()
+        published = conn.execute(
+            "SELECT COUNT(*) FROM campaigns WHERE status='published'").fetchone()[0]
+
+        tag_cfg = bool(cfg.AMAZON_ASSOCIATE_TAG) and \
+            "your_" not in str(cfg.AMAZON_ASSOCIATE_TAG).lower()
+        postback_default = str(db_manager.get_postback_secret()).startswith("change_me")
+        grievance = (db_manager.get_operator_setting("grievance_name", ""),
+                     db_manager.get_operator_setting("grievance_contact", ""))
+        pbu = db_manager.get_system_setting("public_base_url", "")
+        last_check = db_manager.get_system_setting("last_spot_check_at", "")
+
+        checks = {
+            "posts_published_ge_10": published >= 10,
+            "affiliate_tag_configured": tag_cfg,
+            "telegram_channel_ready": config.has_telegram(),
+            "disclosure_page_live": True,   # route always mounted
+            "privacy_page_live": True,
+            "grievance_contact_set": bool(grievance[0] and grievance[1]),
+            "https_public_url": str(pbu).lower().startswith("https://"),
+            "postback_secret_rotated": not postback_default,
+        }
+
+        days_since = None
+        if last_check:
+            try:
+                from datetime import date as _d
+                then = _d.fromisoformat(str(last_check)[:10])
+                days_since = (datetime.utcnow().date() - then).days
+            except ValueError:
+                pass
+        spot_due = days_since is None or days_since > cfg.SPOT_CHECK_DAYS
+
+        total_commission = _lifetime_commission()
+        gst_warning = total_commission >= cfg.GST_THRESHOLD
+
+        return jsonify({
+            "status": "success",
+            "checks": checks,
+            "ready_to_apply": all(checks.values()),
+            "published_posts": published,
+            "spot_check": {"due": spot_due, "days_since": days_since,
+                           "cadence_days": cfg.SPOT_CHECK_DAYS},
+            "gst": {"total_commission": round(total_commission, 2),
+                    "threshold": cfg.GST_THRESHOLD,
+                    "warning": gst_warning},
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+def _lifetime_commission():
+    db = get_db()
+    row = db.execute(
+        "SELECT COALESCE(SUM(commission_amount),0) FROM affiliate_conversions "
+        "WHERE status='converted'").fetchone()
+    return float(row[0] or 0)
+
+
+@app.route("/api/compliance/spot_check", methods=["POST"])
+@login_required
+@limiter.limit("10 per hour")
+def api_spot_check_log():
+    """
+    Record that the operator completed the monthly price spot-check.
+    Body: {"reviewed": 5, "notes": "optional"} — honesty-based logging;
+    the duty itself is manual review against live store prices. Admin-only:
+    compliance records are operator business, not viewer data.
+    """
+    if current_user.role != "admin":
+        return jsonify({"status": "error", "message": "Admin role required"}), 403
+    data = request.json or {}
+    reviewed = int(data.get("reviewed", 0) or 0)
+    if reviewed <= 0:
+        return jsonify({"status": "error", "message": "reviewed must be > 0"}), 400
+    db_manager.set_system_setting("last_spot_check_at", datetime.utcnow().date().isoformat())
+    log_raw = db_manager.get_operator_setting("spot_check_log", "[]")
+    try:
+        log = json.loads(log_raw or "[]")
+    except ValueError:
+        log = []
+    log.append({"at": datetime.utcnow().isoformat(), "reviewed": reviewed,
+                "notes": str(data.get("notes", ""))[:300]})
+    db_manager.set_operator_setting("spot_check_log", json.dumps(log[-24:]))
+    return jsonify({"status": "success", "logged_at": db_manager.get_system_setting("last_spot_check_at")})
 
 
 @app.route("/api/background/status")
