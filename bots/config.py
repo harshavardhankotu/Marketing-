@@ -55,8 +55,20 @@ ADMIN_DEFAULT_PASSWORD = os.getenv('ADMIN_DEFAULT_PASSWORD', 'admin123')
 # Only these domains (and their subdomains) may be used as affiliate targets.
 TRUSTED_DOMAINS = os.getenv(
     'TRUSTED_DOMAINS',
-    'amazon.in,amazon.com,amzn.in,amzn.to,geni.us'
+    'amazon.in,amazon.com,amzn.in,amzn.to,geni.us,flipkart.com,myntra.com'
 ).split(',')
+
+# ── Multi-network affiliate IDs (link_adapter transforms) ────────────────────
+FLIPKART_AFFID = os.getenv('FLIPKART_AFFID', '')
+MYNTRA_AFF_ID = os.getenv('MYNTRA_AFF_ID', '')
+
+# ── Email newsletter (double opt-in; SMTP optional — link logged when absent)
+SMTP_HOST = os.getenv('SMTP_HOST', '')
+SMTP_PORT = int(os.getenv('SMTP_PORT', '587') or 587)
+SMTP_USER = os.getenv('SMTP_USER', '')
+SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
+SMTP_FROM = os.getenv('SMTP_FROM', 'deals@example.com')
+NEWSLETTER_NAME = os.getenv('NEWSLETTER_NAME', 'Hot Deals Weekly')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AMAZON ASSOCIATES & PA-API v5

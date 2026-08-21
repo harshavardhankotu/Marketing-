@@ -169,6 +169,17 @@ def growth_snapshot():
     return result.get("count")
 
 
+def daily_pin():
+    """
+    Pin the best published deal of the last 24h to the Telegram channel —
+    the pinned post is the first thing every visitor sees.
+    """
+    from pinner import pin_top_deal
+
+    result = pin_top_deal()
+    return 1 if result.get("pinned") else 0
+
+
 def hot_backup():
     """
     Zero-cost hot backup using SQLite's online backup API.
@@ -343,6 +354,13 @@ def start(app=None):
         CronTrigger(hour=9, minute=0, timezone=SCHEDULER_TZ),
         id="growth_snapshot",
         name="Daily channel growth snapshot",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _instrumented("daily_pin", daily_pin),
+        CronTrigger(hour=10, minute=0, timezone=SCHEDULER_TZ),
+        id="daily_pin",
+        name="Pin top-EV deal of the day",
         replace_existing=True,
     )
     scheduler.add_job(

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Deals Newsletter{% endblock %}
+
+{% block content %}
+<div class="panel" style="max-width:480px;margin:60px auto">
+  <h2>📬 The Hot Deals Digest</h2>
+  <p class="hint">
+    One email with the week's highest-scoring price drops — every deal tracked
+    by our price engine, "LOWEST EVER" badges flagged. No spam, ever.
+  </p>
+  <form method="post" action="/subscribe">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="field">
+      <label for="email">Email address</label>
+      <input type="email" id="email" name="email" required
+             placeholder="you@example.com" autocomplete="email">
+    </div>
+    <button type="submit" class="btn primary" style="width:100%">Subscribe — it's free</button>
+  </form>
+  <p class="hint mt">
+    Double opt-in: we'll send one confirmation link; you're subscribed only
+    after you click it. Unsubscribe anytime with one click.
+    See our <a href="/privacy">Privacy Policy</a> and
+    <a href="/disclosure">Affiliate Disclosure</a>.
+  </p>
+</div>
+{% endblock %}

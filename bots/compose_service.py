@@ -40,6 +40,7 @@ def compose_campaigns(products, sector):
     from generators.ai_copywriter import generate_deal_post
     from generators.deal_card import render_deal_card
     from bots.deal_scorer import score_deal, rank_deals
+    from bots.link_adapter import build_link
     from bots import ab_engine
     from db_manager import (
         save_campaign, has_recent_campaign, get_lowest_recorded_price,
@@ -88,6 +89,14 @@ def compose_campaigns(products, sector):
             # ── 5. Composition ───────────────────────────────────────────
             product["sector"] = sector
             product["commission"] = product.get("commission", 0.03)
+            # Multi-network monetization: attach the right affiliate ID for
+            # whichever store this deal came from (amazon/flipkart/myntra).
+            converted_url, store = build_link(
+                product.get("target_url") or product.get("affiliate_link") or "")
+            if converted_url:
+                product["target_url"] = converted_url
+                product["affiliate_link"] = converted_url
+                product["store"] = store or "unknown"
             caption = generate_deal_post(product)
             if hook_text:
                 caption = f"{hook_text}\n\n{caption}"

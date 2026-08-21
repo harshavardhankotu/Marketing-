@@ -943,7 +943,18 @@ def api_share_links():
 
         links = []
         variant = campaign.get("variant") if campaign.get("variant") in ("A", "B") else ""
+        caption_text = campaign.get("caption") or ""
         for channel in [c.strip() for c in channels_raw.split(",") if c.strip()][:12]:
+            # WhatsApp Channels have no public posting API — the zero-cost,
+            # ToS-safe path is a wa.me deep link that opens WhatsApp with the
+            # full deal post pre-filled for the operator to publish.
+            if channel == "whatsapp":
+                links.append({
+                    "channel": "whatsapp",
+                    "url": "https://wa.me/?text=" + urllib.parse.quote(f"{caption_text}\n\n{base_url}/deals/{campaign_id}"),
+                    "mode": "deep-link",
+                })
+                continue
             qs = urllib.parse.urlencode({
                 "url": target,
                 "title": title,
@@ -1028,6 +1039,157 @@ def api_conversions_import():
             "failed": failed,
             "errors": errors[:20],
         })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/repackage/<int:campaign_id>", methods=["POST"])
+@login_required
+@limiter.limit("20 per minute")
+def api_repackage(campaign_id):
+    """
+    Repurpose an existing campaign into platform-native renders:
+    Shorts/Reels cover (1080x1920) + Pinterest pin (1000x1500).
+    Pure Pillow — free, instant, no video encode needed.
+    """
+    try:
+        from generators.deal_card import render_deal_card
+
+        campaign = db_manager.get_campaign(campaign_id)
+        if not campaign:
+            return jsonify({"status": "error", "message": "Campaign not found"}), 404
+
+        score = float(campaign.get("deal_score") or 0)
+        product = {
+            "id": campaign.get("product_id") or campaign["id"],
+            "title": campaign.get("title"),
+            "price": campaign.get("price"),
+            "mrp": campaign.get("mrp"),
+            "discount_pct": campaign.get("discount"),
+            "badge": "LOWEST EVER" if campaign.get("lowest_ever") else ("HOT DEAL" if score >= 55 else ""),
+            "is_lowest_ever": bool(campaign.get("lowest_ever")),
+        }
+        shorts_path = render_deal_card(product, size="shorts")
+        pin_path = render_deal_card(product, size="pin")
+        return jsonify({
+            "status": "success",
+            "campaign_id": campaign_id,
+            "shorts_cover": shorts_path,
+            "pinterest_pin": pin_path,
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEWSLETTER — double opt-in (DPDP-consent friendly), instant unsubscribe
+# ─────────────────────────────────────────────────────────────────────────────
+_EMAIL_RE = None
+
+
+def _valid_email(email):
+    global _EMAIL_RE
+    if _EMAIL_RE is None:
+        import re
+        _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+    return bool(_EMAIL_RE.match(email or ""))
+
+
+@app.route("/subscribe", methods=["GET", "POST"])
+@limiter.limit("10 per hour")
+def newsletter_subscribe_page():
+    from generators.newsletter import send_email
+
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        if not _valid_email(email):
+            flash("Please enter a valid email address.", "error")
+            return redirect("/subscribe")
+
+        token = db_manager.newsletter_subscribe(email)
+        base = db_manager.get_system_setting("public_base_url", "").rstrip("/") or request.url_root.rstrip("/")
+        confirm_url = f"{base}/subscribe/confirm?token={token}"
+        body = (
+            f"<p>Welcome to the deals digest!</p>"
+            f"<p>Confirm your subscription (double opt-in):</p>"
+            f"<p><a href='{confirm_url}'>Confirm subscription</a></p>"
+            f"<p>If you didn't request this, ignore this email.</p>"
+        )
+        ok, err = send_email(email, "Confirm your deals subscription", f"<html><body>{body}</body></html>")
+        if not ok and err == "smtp_not_configured":
+            # Dev/CI sandbox: log the link so the flow stays testable end-to-end.
+            print(f"[NEWSLETTER] SMTP not configured. Confirm link for {email}: {confirm_url}")
+        # Same message either way — never leak whether an address exists.
+        flash("Check your inbox to confirm the subscription.", "success")
+        return redirect("/deals")
+
+    return render_template("newsletter_subscribe.html")
+
+
+@app.route("/subscribe/confirm")
+def newsletter_confirm_route():
+    token = request.args.get("token", "")
+    ok = db_manager.newsletter_confirm(token) if token else False
+    flash("Subscription confirmed — see you in the next digest!" if ok
+          else "That confirmation link is invalid or already used.", "success" if ok else "error")
+    return redirect("/deals")
+
+
+@app.route("/unsubscribe")
+def newsletter_unsubscribe_route():
+    token = request.args.get("token", "")
+    ok = db_manager.newsletter_unsubscribe(token) if token else False
+    flash("You've been unsubscribed. Sorry to see you go!" if ok
+          else "Unsubscribe link not recognised.", "success" if ok else "error")
+    return redirect("/deals")
+
+
+@app.route("/api/newsletter/preview")
+@login_required
+def api_newsletter_preview():
+    """Render the next digest as HTML without sending anything."""
+    try:
+        from generators.newsletter import build_html
+        deals = db_manager.get_top_published_deals(limit=8)
+        html = build_html(deals, base_url=_public_base_url())
+        return jsonify({"status": "success", "recipients": len(db_manager.newsletter_list_confirmed()), "html": html})
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/newsletter/send", methods=["POST"])
+@login_required
+@limiter.limit("5 per hour")
+def api_newsletter_send():
+    if current_user.role != "admin":
+        return jsonify({"status": "error", "message": "Admin role required"}), 403
+    try:
+        from generators.newsletter import build_html, render_with_unsubscribe, send_email
+
+        recipients = db_manager.newsletter_list_confirmed(limit=200)
+        if not recipients:
+            return jsonify({"status": "error", "message": "No confirmed subscribers yet."}), 400
+
+        deals = db_manager.get_top_published_deals(limit=8)
+        base = db_manager.get_system_setting("public_base_url", "").rstrip("/") or request.url_root.rstrip("/")
+        template_html = build_html(deals, base_url=base)
+
+        sent = failed = 0
+        errors = []
+        for r in recipients:
+            unsub_url = f"{base}/unsubscribe?token={r['token']}"
+            ok, err = send_email(r["email"], "This week's hottest price drops",
+                                 render_with_unsubscribe(template_html, unsub_url))
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+                errors.append(f"{r['email']}: {err}")
+
+        db_manager.set_system_setting("newsletter_last_sent", datetime.utcnow().isoformat())
+        return jsonify({"status": "success", "sent": sent, "failed": failed,
+                        "errors": errors[:10],
+                        "smtp_configured": bool(app.config.get("_SMTP_OK", True))})
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 500
 

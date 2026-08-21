@@ -227,6 +227,17 @@ SCHEMA_STATEMENTS = [
         captured_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    # 16. Newsletter subscribers — double opt-in, instant unsubscribe (DPDP)
+    """
+    CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        email            TEXT UNIQUE NOT NULL,
+        token            TEXT UNIQUE NOT NULL,
+        confirmed        INTEGER DEFAULT 0,
+        unsubscribed_at  TIMESTAMP,
+        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 ]
 
 # Seed rows for system_settings (spec section B item 5)
@@ -621,6 +632,124 @@ def get_growth_summary(channel="telegram"):
 
 def _snapshots_per_day():
     return 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEWSLETTER — double opt-in subscribers (DPDP-consent friendly)
+# ─────────────────────────────────────────────────────────────────────────────
+_EMAIL_RE = None
+
+
+def newsletter_subscribe(email):
+    """
+    Register/refresh an opt-in. Returns the confirm token (new or existing
+    row re-tokened). Unconfirmed + previously unsubscribed rows start over.
+    """
+    import secrets
+
+    email = (email or "").strip().lower()
+    token = secrets.token_urlsafe(24)
+    conn = _connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT id FROM newsletter_subscribers WHERE email = ?", (email,)
+        ).fetchone()
+        if row:
+            cursor.execute(
+                """
+                UPDATE newsletter_subscribers
+                SET token = ?, confirmed = 0, unsubscribed_at = NULL
+                WHERE email = ?
+                """,
+                (token, email),
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO newsletter_subscribers (email, token) VALUES (?, ?)",
+                (email, token),
+            )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def newsletter_confirm(token):
+    """Mark a subscriber confirmed via their double-opt-in token."""
+    conn = _connection()
+    try:
+        cur = conn.execute(
+            "UPDATE newsletter_subscribers SET confirmed = 1 WHERE token = ?",
+            (token,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def newsletter_unsubscribe(token):
+    """Honor an unsubscribe instantly (one click, no login)."""
+    from datetime import datetime as _dt
+
+    conn = _connection()
+    try:
+        cur = conn.execute(
+            "UPDATE newsletter_subscribers SET unsubscribed_at = CURRENT_TIMESTAMP "
+            "WHERE token = ?",
+            (token,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def newsletter_list_confirmed(limit=200):
+    """Active recipients: confirmed, not unsubscribed (email + token for unsub links)."""
+    conn = _connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            """
+            SELECT email, token FROM newsletter_subscribers
+            WHERE confirmed = 1 AND unsubscribed_at IS NULL
+            ORDER BY id LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+
+def newsletter_get_email(token):
+    conn = _connection()
+    try:
+        row = conn.execute(
+            "SELECT email FROM newsletter_subscribers WHERE token = ?", (token,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def get_top_published_deals(limit=8):
+    """Best published campaigns for newsletter/repackage surfaces."""
+    conn = _connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT * FROM campaigns WHERE status = 'published'
+            ORDER BY deal_score DESC, created_at DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

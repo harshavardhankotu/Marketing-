@@ -926,6 +926,138 @@ client.get("/logout")
 login()
 
 # ═════════════════════════════════════════════════════════════════════════════
+# P. GROWTH SURFACES — multi-network links, WhatsApp kit, repurposing,
+#    auto-pin, newsletter
+# ═════════════════════════════════════════════════════════════════════════════
+section("P. Multi-Network, Repurposing, Auto-Pin, Newsletter")
+from bots.link_adapter import build_link, detect_store  # noqa: E402
+import bots.link_adapter as link_adapter  # noqa: E402
+
+check("detect_store amazon/flipkart/myntra/unknown",
+      detect_store("https://www.amazon.in/dp/X") == "amazon"
+      and detect_store("https://dl.flipkart.com/dl/p") == "flipkart"
+      and detect_store("https://www.myntra.com/x/1") == "myntra"
+      and detect_store("https://example.org/y") is None)
+
+with mock.patch.object(link_adapter, "AMAZON_ASSOCIATE_TAG", "audit-tag-21"):
+    u, store = build_link("https://www.amazon.in/dp/B0X?tag=old")
+    check("amazon tag replaced idempotently",
+          store == "amazon" and "tag=old" not in u and u.count("tag=") == 1 and u.endswith("tag=audit-tag-21"))
+
+with mock.patch.object(link_adapter, "FLIPKART_AFFID", "FKAFF123"):
+    u, store = build_link("https://dl.flipkart.com/dl/product?pid=ABC")
+    check("flipkart affid attached", store == "flipkart" and "affid=FKAFF123" in u)
+    u2, _ = build_link(u)
+    check("flipkart transform idempotent", u2.count("affid=") == 1)
+
+with mock.patch.object(link_adapter, "MYNTRA_AFF_ID", "MYN9"):
+    u, store = build_link("https://www.myntra.com/item/99")
+    check("myntra aff_id attached", store == "myntra" and "aff_id=MYN9" in u)
+
+u, store = build_link("https://example.org/already-converted?utm=x")
+check("unknown domain passes through untouched", u == "https://example.org/already-converted?utm=x")
+
+# Compose service stamps the converted URL + store on saved campaigns.
+conn = sqlite3.connect(DB_PATH)
+srow = conn.execute("SELECT target_url FROM campaigns WHERE target_url LIKE '%tag=%' LIMIT 1").fetchone()
+conn.close()
+check("saved deals carry affiliate-tagged URLs", srow is not None and "tag=" in (srow[0] or ""))
+
+# ── WhatsApp deep-link share kit ─────────────────────────────────────────────
+resp = client.get(f"/api/share_links?campaign_id={pub_camp}&channels=whatsapp")
+wdata = resp.get_json()
+wlink = (wdata.get("links") or [{}])[0]
+check("whatsapp deep-link generated",
+      wlink.get("channel") == "whatsapp" and wlink["url"].startswith("https://wa.me/?text=")
+      and wlink.get("mode") == "deep-link")
+
+# ── Shorts / Pinterest repackaging ───────────────────────────────────────────
+resp = client.post(f"/api/repackage/{pub_camp}")
+rdata = resp.get_json()
+shorts_rel = rdata.get("shorts_cover", "")
+pin_rel = rdata.get("pinterest_pin", "")
+check("repackage returns shorts+pin urls", rdata.get("status") == "success"
+      and shorts_rel.endswith("_shorts.png") and pin_rel.endswith("_pin.png"))
+check("repackaged assets exist on disk",
+      os.path.exists(os.path.join(PROJECT_ROOT, shorts_rel.lstrip("/")))
+      and os.path.exists(os.path.join(PROJECT_ROOT, pin_rel.lstrip("/"))))
+resp = client.post("/api/repackage/999999")
+check("repackage unknown campaign 404", resp.status_code == 404)
+
+# ── Auto-pin top-EV deal ─────────────────────────────────────────────────────
+from bots.pinner import pin_top_deal  # noqa: E402
+res = pin_top_deal()
+check("pinner skips cleanly without telegram message ids",
+      res.get("pinned") is False and res.get("reason") in ("no_published_telegram_message", "telegram_not_configured"))
+conn = sqlite3.connect(DB_PATH)
+conn.execute(
+    "INSERT INTO distribution_logs (campaign_id, channel, status, message_id) "
+    f"VALUES ({pub_camp}, 'telegram', 'Success (Live)', '777')")
+conn.commit(); conn.close()
+with mock.patch.object(__import__("bots.pinner", fromlist=["_configured"]), "_configured", return_value=True), \
+     mock.patch("bots.pinner.TELEGRAM_BOT_TOKEN", "12345:fake", create=True), \
+     mock.patch("bots.pinner.requests") as preq:
+    preq.post.return_value = _FakeResp(200, {"ok": True})
+    res = pin_top_deal()
+check("auto-pin pins best deal via Bot API", res.get("pinned") is True and res.get("campaign_id") == pub_camp)
+with mock.patch.object(__import__("bots.pinner", fromlist=["_configured"]), "_configured", return_value=True), \
+     mock.patch("bots.pinner.TELEGRAM_BOT_TOKEN", "12345:fake", create=True), \
+     mock.patch("bots.pinner.requests") as preq:
+    preq.post.return_value = _FakeResp(200, {"ok": False, "description": "need admin rights"})
+    res = pin_top_deal()
+check("pinner reports bot-side failures honestly", res.get("pinned") is False and "admin" in res.get("reason", ""))
+
+status = scheduler_engine.get_status()
+job_ids = {j["job_id"] for j in status.get("jobs", [])}
+check("daily_pin job registered (8 jobs)", "daily_pin" in job_ids and len(job_ids) >= 8, str(job_ids))
+
+# ── Newsletter: double opt-in lifecycle ──────────────────────────────────────
+resp = anon.post("/subscribe", data={"email": "not-an-email"}, follow_redirects=False)
+check("subscribe rejects invalid email", resp.status_code in (302, 400))
+resp = client.post("/subscribe", data={"email": "reader@example.com"})
+check("subscribe accepts valid email (302 to /deals)", resp.status_code == 302
+      and "/deals" in (resp.headers.get("Location") or ""))
+sub_row = sqlite3.connect(DB_PATH).execute(
+    "SELECT token, confirmed FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()
+check("subscriber stored unconfirmed with token", sub_row is not None and sub_row[1] == 0)
+anon.get(f"/subscribe/confirm?token={sub_row[0]}")
+confirmed = sqlite3.connect(DB_PATH).execute(
+    "SELECT confirmed FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()[0]
+check("double opt-in confirm works", confirmed == 1)
+
+resp = client.get("/api/newsletter/preview")
+pv = resp.get_json()
+check("newsletter preview renders digest html",
+      resp.status_code == 200 and pv.get("html") and "View live price" in pv["html"])
+check("digest carries ASCI disclosure + unsubscribe placeholder",
+      "no extra cost" in pv["html"] and "unsubscribe_url" in pv["html"])
+
+resp = client.post("/api/newsletter/send")
+send_res = resp.get_json()
+check("send fails gracefully without SMTP (never fakes)",
+      send_res.get("failed") == 1 and any("smtp_not_configured" in e for e in send_res.get("errors", [])))
+
+# Duplicate subscribe re-tokens + resets confirmation (single row kept).
+client.post("/subscribe", data={"email": "READER@example.com"})
+tokens = sqlite3.connect(DB_PATH).execute(
+    "SELECT COUNT(*) FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()[0]
+check("duplicate subscribe stays single-row", tokens == 1)
+
+# Unsubscribe with the CURRENT token — one click, honored instantly.
+fresh_token = sqlite3.connect(DB_PATH).execute(
+    "SELECT token FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()[0]
+resp = anon.get(f"/unsubscribe?token={fresh_token}", follow_redirects=False)
+unsub = sqlite3.connect(DB_PATH).execute(
+    "SELECT unsubscribed_at FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()[0]
+check("one-click unsubscribe honored", unsub is not None)
+resp = client.post("/api/newsletter/send")
+check("unsubscribed address excluded from recipients",
+      resp.get_json().get("status") == "error")  # no active recipients remain
+
+resp = client.get("/subscribe")
+check("public subscribe page renders", resp.status_code == 200 and "/subscribe" in resp.get_data(as_text=True))
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════════════════════════════
 print(f"\n{'=' * 70}")

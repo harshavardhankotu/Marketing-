@@ -24,7 +24,13 @@ try:
 except ImportError:
     CAMPAIGN_STATIC_DIR = os.path.join(PROJECT_ROOT, "static", "campaigns")
 
-W, H = 1080, 1350
+# Canvas presets — one renderer feeds every surface.
+SIZES = {
+    "card": (1080, 1350),   # feed / forwardable square-ish
+    "shorts": (1080, 1920),  # YouTube Shorts / IG Reels cover
+    "pin": (1000, 1500),    # Pinterest 2:3
+}
+W, H = SIZES["card"]
 
 # Ledger-theme palette.
 BG_TOP = (16, 20, 29)
@@ -115,18 +121,25 @@ def _pill(draw, xy_center, text, font, fill, pad_x=34, pad_y=16, radius=999):
     return [x0, y0, x1, y1]
 
 
-def render_deal_card(product, out_path=None):
+def render_deal_card(product, out_path=None, size="card"):
     """
-    Render the 1080x1350 forwardable deal card for a scored product.
+    Render a forwardable deal card for a scored product.
+
+    Sizes: "card" (1080x1350 feed), "shorts" (1080x1920 Shorts/Reels cover),
+    "pin" (1000x1500 Pinterest 2:3).
 
     Writes under ``static/campaigns/`` and returns the WEB-relative path
-    (``/static/campaigns/deal_<id>.png``) so it can be stored in the DB and
-    served directly on public pages. Channel adapters resolve the real file
-    via basename when posting.
+    (``/static/campaigns/deal_<id>[_size].png``) so it can be stored in the
+    DB and served directly on public pages. Channel adapters resolve the real
+    file via basename when posting.
     """
+    global W, H
+    W, H = SIZES.get(size, SIZES["card"])
+
     os.makedirs(CAMPAIGN_STATIC_DIR, exist_ok=True)
     pid = str(product.get("id") or product.get("product_id") or "deal")
-    filename = f"deal_{pid}.png"
+    suffix = "" if size == "card" else f"_{size}"
+    filename = f"deal_{pid}{suffix}.png"
     if not out_path:
         out_path = os.path.join(CAMPAIGN_STATIC_DIR, filename)
 
@@ -140,20 +153,25 @@ def render_deal_card(product, out_path=None):
     badge = product.get("badge") or ""
     is_lowest = bool(product.get("is_lowest_ever"))
 
+    # Proportional anchors so one layout serves card/shorts/pin ratios.
+    header_y = int(H * 0.068)
+    underline_y = int(H * 0.0975)
+    badge_y = int(H * 0.155)
+    title_start = badge_y if not badge else int(H * 0.235)
+
     # ── Header ────────────────────────────────────────────────────────────
     header_font = _load_font(52)
-    draw.text((W / 2, 92), "PRICE DROP ALERT", font=header_font, fill=AMBER, anchor="mm")
+    draw.text((W / 2, header_y), "PRICE DROP ALERT", font=header_font, fill=AMBER, anchor="mm")
 
     # Accent underline.
-    draw.rounded_rectangle([W / 2 - 130, 132, W / 2 + 130, 140], radius=4, fill=AMBER)
+    draw.rounded_rectangle([W / 2 - 130, underline_y, W / 2 + 130, underline_y + 8], radius=4, fill=AMBER)
 
     # ── Scarcity badge ────────────────────────────────────────────────────
-    y_cursor = 210
+    y_cursor = title_start
     if badge:
         badge_fill = RED if is_lowest else GREEN
         label = badge if is_lowest or badge != "LOWEST EVER" else "LOWEST EVER"
-        _pill(draw, (W / 2, y_cursor), label, _load_font(46), badge_fill)
-        y_cursor += 110
+        _pill(draw, (W / 2, badge_y), label, _load_font(46), badge_fill)
 
     # ── Title (wrapped) ───────────────────────────────────────────────────
     title_font = _load_font(62)
@@ -165,7 +183,9 @@ def render_deal_card(product, out_path=None):
         y_cursor += line_h
 
     # ── Price block ───────────────────────────────────────────────────────
-    price_y = min(max(y_cursor + 120, 860), 1000)
+    price_floor = int(H * 0.60)
+    price_ceiling = int(H * 0.72)
+    price_y = min(max(y_cursor + 120, price_floor), price_ceiling)
     price_font = _load_font(150)
     price_text = _fmt_inr(price)
     draw.text((W / 2, price_y), price_text, font=price_font, fill=GREEN, anchor="mm")
@@ -189,14 +209,14 @@ def render_deal_card(product, out_path=None):
                   font=_load_font(54), fill=AMBER, anchor="mm")
 
     # ── Urgency line ──────────────────────────────────────────────────────
-    draw.text((W / 2, 1130), "Limited-period offer — live price on Amazon",
+    draw.text((W / 2, int(H * 0.835)), "Limited-period offer — live price on the store",
               font=_load_font(40), fill=DIM, anchor="mm")
 
     # ── Disclosure footer ─────────────────────────────────────────────────
-    draw.line([80, 1210, W - 80, 1210], fill=PANEL, width=3)
+    draw.line([80, int(H * 0.895), W - 80, int(H * 0.895)], fill=PANEL, width=3)
     disc_font = _load_font(27)
     disc_lines = _wrap(draw, DISCLOSURE, disc_font, W - 200)[:2]
-    dy = 1252
+    dy = int(H * 0.925)
     for line in disc_lines:
         draw.text((W / 2, dy), line, font=disc_font, fill=DIM, anchor="mm")
         dy += 38
