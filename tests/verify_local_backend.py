@@ -1,5 +1,5 @@
-"""
-Local backend verification — database integrity, auth flow, dashboard render.
+﻿"""
+Local backend verification â€” database integrity, auth flow, dashboard render.
 
 Uses a dynamic temp-database workaround (DB_PATH env override) so tests never
 touch the production SQLite file.
@@ -17,6 +17,11 @@ _TMP = tempfile.mkdtemp(prefix="affiliate_test_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["FLASK_SECRET_KEY"] = "test_secret"
 os.environ["POSTBACK_SECRET"] = "test_postback_secret"
+os.environ["ADMIN_DEFAULT_PASSWORD"] = "admin123"   # hermetic creds, not operator .env
+# Sandbox: neutralize live external services regardless of operator .env
+for _k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GEMINI_API_KEY",
+           "SMTP_HOST", "AMAZON_PAAPI_ACCESS_KEY", "AMAZON_PAAPI_SECRET_KEY"):
+    os.environ[_k] = ""
 
 import app as app_module  # noqa: E402
 import db_manager  # noqa: E402
@@ -36,7 +41,7 @@ def check(name, condition, detail=""):
         print(f"  [FAIL] {name} {detail}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_db_integrity():
     print("\n== DB Integrity ==")
     db_manager.setup_database()
@@ -53,7 +58,7 @@ def test_db_integrity():
     for table in required:
         check(f"table exists: {table}", table in tables)
 
-    # Strict compliance — forbidden tables must NOT exist.
+    # Strict compliance â€” forbidden tables must NOT exist.
     for forbidden in ("user_wallets", "payout_transactions", "cpa_phone_pool"):
         check(f"no forbidden table: {forbidden}", forbidden not in tables)
 
@@ -77,7 +82,7 @@ def test_db_integrity():
     check("journal_mode = WAL", str(mode).lower() == "wal")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_auth_flow():
     print("\n== Auth Flow ==")
     client = app_module.app.test_client()
@@ -113,12 +118,12 @@ def test_auth_flow():
     resp = client.get("/logout", follow_redirects=False)
     check("logout redirects (302)", resp.status_code == 302)
 
-    # Access control — dashboard requires auth.
+    # Access control â€” dashboard requires auth.
     resp = client.get("/", follow_redirects=False)
     check("GET / redirects when anonymous (302)", resp.status_code == 302)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_dashboard_api():
     print("\n== Dashboard API ==")
     client = app_module.app.test_client()
@@ -140,7 +145,7 @@ def test_dashboard_api():
 
 
 if __name__ == "__main__":
-    print("verify_local_backend — local backend verification")
+    print("verify_local_backend â€” local backend verification")
     test_db_integrity()
     test_auth_flow()
     test_dashboard_api()

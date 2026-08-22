@@ -1,5 +1,5 @@
-"""
-Security hardening verification — HMAC webhook authentication, CSRF, and
+﻿"""
+Security hardening verification â€” HMAC webhook authentication, CSRF, and
 idempotent conversion processing.
 
 Confirms:
@@ -24,6 +24,11 @@ _TMP = tempfile.mkdtemp(prefix="affiliate_sec_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["FLASK_SECRET_KEY"] = "test_secret"
 os.environ["POSTBACK_SECRET"] = "test_postback_secret"
+os.environ["ADMIN_DEFAULT_PASSWORD"] = "admin123"   # hermetic creds, not operator .env
+# Sandbox: neutralize live external services regardless of operator .env
+for _k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GEMINI_API_KEY",
+           "SMTP_HOST", "AMAZON_PAAPI_ACCESS_KEY", "AMAZON_PAAPI_SECRET_KEY"):
+    os.environ[_k] = ""
 
 import app as app_module  # noqa: E402
 import db_manager  # noqa: E402
@@ -142,7 +147,7 @@ def test_csrf_protection():
 
 
 if __name__ == "__main__":
-    print("verify_security_hardened — security hardening verification")
+    print("verify_security_hardened â€” security hardening verification")
     test_hmac_webhook()
     test_idempotency()
     test_csrf_protection()

@@ -1,5 +1,5 @@
-"""
-Full feature audit — exercises EVERY feature and use case of the suite
+﻿"""
+Full feature audit â€” exercises EVERY feature and use case of the suite
 against an isolated temp database and prints a PASS/FAIL line per feature.
 
 Run:  python tests/full_feature_audit.py
@@ -22,6 +22,11 @@ _TMP = tempfile.mkdtemp(prefix="affiliate_audit_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "audit.db")
 os.environ["FLASK_SECRET_KEY"] = "audit_secret"
 os.environ["POSTBACK_SECRET"] = "audit_postback_secret"
+os.environ["ADMIN_DEFAULT_PASSWORD"] = "admin123"   # hermetic creds, not operator .env
+# Sandbox: neutralize live external services regardless of operator .env
+for _k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GEMINI_API_KEY",
+           "SMTP_HOST", "AMAZON_PAAPI_ACCESS_KEY", "AMAZON_PAAPI_SECRET_KEY"):
+    os.environ[_k] = ""
 os.environ["MOCK_SOURCING"] = "True"
 os.environ["FAST_VIDEO_RENDER"] = "True"
 
@@ -46,7 +51,7 @@ def _sign(body, secret):
     return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import app as app_module  # noqa: E402
 import db_manager  # noqa: E402
 from config import DB_PATH, BACKUP_DIR, CAMPAIGN_STATIC_DIR  # noqa: E402
@@ -70,9 +75,9 @@ def login(username="admin", password="admin123"):
                        follow_redirects=False)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # A. DATABASE & SCHEMA
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("A. Database & Schema")
 conn = sqlite3.connect(DB_PATH)
 tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -123,9 +128,9 @@ os.environ["DB_PATH"] = os.environ["DB_PATH_BAK"]
 config_mod.DB_PATH = os.environ["DB_PATH"]
 db_manager.DB_PATH = os.environ["DB_PATH"]
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # B. AUTH & SECURITY
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("B. Auth & Security")
 reset_limiter()
 resp = client.get("/login")
@@ -209,9 +214,9 @@ check("login rate limit trips (429 on 6th+)", 429 in codes, str(codes))
 reset_limiter()
 login()
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # C. TRACKED REDIRECT & ATTRIBUTION
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("C. Tracked Redirect & Attribution")
 UA_HUMAN = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
 UA_BOT = {"User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)"}
@@ -243,9 +248,9 @@ dedup_rows = conn.execute("SELECT COUNT(*) FROM affiliate_clicks WHERE product_i
 conn.close()
 check("rapid duplicate clicks de-duplicated (1 row)", dedup_rows == 1, f"got {dedup_rows}")
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # D. HMAC POSTBACK & IDEMPOTENCY
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("D. HMAC Postback & Idempotency")
 payload = {"transaction_id": "AUDIT-TXN-1", "product_id": "PROD-X", "session_id": human_row[1] if human_row else "127.0.0.1",
            "sale_amount": 2999.0, "commission_amount": 90.0}
@@ -268,10 +273,10 @@ conv_count = conn.execute("SELECT COUNT(*) FROM affiliate_conversions WHERE tran
 conn.close()
 check("conversion stored exactly once", conv_count == 1, f"got {conv_count}")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# E. ML — BANDIT + EV RANKER
-# ═════════════════════════════════════════════════════════════════════════════
-section("E. ML — Bandit & EV Ranker")
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# E. ML â€” BANDIT + EV RANKER
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+section("E. ML â€” Bandit & EV Ranker")
 import ab_engine  # noqa: E402
 import revenue_ranker  # noqa: E402
 import affiliate_tracker  # noqa: E402
@@ -290,9 +295,9 @@ if len(ranking) >= 2:
 best = revenue_ranker.best_sector()
 check("best_sector returns top EV sector", best is None or (isinstance(best, dict) and best.get("sector") == ranking[0]["sector"]))
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # F. PIPELINE & CAMPAIGN LIFECYCLE
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("F. Pipeline & Campaign Lifecycle")
 resp = client.post("/api/run_pipeline", json={"sector": "electronics"})
 data = resp.get_json()
@@ -330,9 +335,9 @@ db_manager.save_campaign({"id": "XSS-1", "title": "<script>alert(1)</script>",
 body_text = client.get("/api/history").get_data(as_text=True)
 check("stored XSS neutralised in API JSON", "<script>alert(1)</script>" not in body_text)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# G. RESILIENCE — QUOTAS, BREAKERS, QUEUE, DLQ
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# G. RESILIENCE â€” QUOTAS, BREAKERS, QUEUE, DLQ
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("G. Resilience Shield")
 quota_manager.reset_quota("twitter")
 summary = quota_manager.consume_quota("twitter", count=1)
@@ -421,9 +426,9 @@ check("retry_sweep wrote distribution log", after_logs > before_logs)
 check("retry queue empty after sweep", job_queue.get_queue_summary().get("pending", 0) == 0)
 job_queue.purge_queue()
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # H. SCHEDULER
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("H. Scheduler Engine")
 status = scheduler_engine.get_status()
 job_ids = {j["job_id"] for j in status.get("jobs", [])}
@@ -475,9 +480,9 @@ for p in (fresh_m, keep_f):
     if os.path.exists(p):
         os.remove(p)
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # I. AMBIENT BACKGROUNDS
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("I. Ambient UI Backgrounds")
 bg_assets = background_factory.ensure_backgrounds(force=False)
 check("all 4 theme posters generated", len(bg_assets) == 4 and all(os.path.exists(p) for p in bg_assets.values()))
@@ -497,9 +502,9 @@ resp = client.post("/api/background/not_a_theme")
 check("unknown theme rejected 400", resp.status_code == 400)
 background_factory.set_active_theme("train")
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # J. PAGES & DASHBOARD APIs
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("J. Pages & Dashboard APIs")
 body = client.get("/").get_data(as_text=True)
 check("dashboard has ticker + stat elements", 'id="ticker"' in body and 'id="stat-clicks"' in body)
@@ -540,9 +545,9 @@ check("reliability_reset purge works", resp.status_code == 200)
 resp = client.post("/api/scheduler_run_now", json={"job_id": "video_trash_collector"})
 check("scheduler_run_now API executes job", resp.status_code == 200 and resp.get_json().get("status") == "success")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# K. REVENUE ENGINE — deal scoring, deal format, cards, public SEO site, clock
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# K. REVENUE ENGINE â€” deal scoring, deal format, cards, public SEO site, clock
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("K. Revenue Engine (free stack)")
 from bots.deal_scorer import score_deal, rank_deals  # noqa: E402
 from generators.ai_copywriter import generate_deal_post  # noqa: E402
@@ -628,9 +633,9 @@ ch_rows = (perf.get("stats") or {}).get("by_channel") or []
 check("channel P&L populated with commission column",
       len(ch_rows) >= 1 and "commission" in ch_rows[0] and ch_rows[0]["clicks"] >= 1)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# L. AUDIENCE ENGINE — growth telemetry, share kit, channel card
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# L. AUDIENCE ENGINE â€” growth telemetry, share kit, channel card
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("L. Audience Engine (free Bot API + share kit)")
 from bots.growth_tracker import (  # noqa: E402
     record_manual, fetch_member_count, growth_summary, build_tracked_link,
@@ -682,9 +687,9 @@ check("share_links unknown campaign 404", resp.status_code == 404)
 cc_path = render_channel_card(members=620, invite_url="t.me/dealsradar")
 check("channel card PNG rendered", os.path.exists(cc_path))
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # M. LEGAL COMPLIANCE PAGES
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("M. Legal & Compliance Pages")
 anon = app_module.app.test_client()
 
@@ -713,9 +718,9 @@ footer_page = anon.get("/deals").get_data(as_text=True)
 check("legal links in site footer",
       all(x in footer_page for x in ('href="/disclosure"', 'href="/privacy"', 'href="/terms"')))
 
-# ═════════════════════════════════════════════════════════════════════════════
-# N. EXTERNAL INTEGRATION SANDBOX (mocked network — no credentials needed)
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# N. EXTERNAL INTEGRATION SANDBOX (mocked network â€” no credentials needed)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("N. Integration Sandbox (mocked network)")
 from unittest import mock  # noqa: E402
 
@@ -737,7 +742,7 @@ class _FakeResp:
             raise _rq.HTTPError(f"{self.status_code}")
 
 
-# ── Telegram live path: success ──────────────────────────────────────────────
+# â”€â”€ Telegram live path: success â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 quota_manager.reset_quota("telegram")
 quota_manager.reset_breaker("telegram")
 with mock.patch.object(distributor, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
@@ -746,7 +751,7 @@ with mock.patch.object(distributor, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
     out = distributor.live_post_to_telegram({"title": "T", "caption": "C", "affiliate_link": "https://www.amazon.in/dp/X"})
 check("telegram live success path", out.get("status") == "Success (Live)" and out.get("message_id") == 4242)
 
-# ── Telegram live path: 5xx trips breaker then degrades to mock ─────────────
+# â”€â”€ Telegram live path: 5xx trips breaker then degrades to mock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 quota_manager.reset_quota("telegram")
 with mock.patch.object(distributor, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
      mock.patch.object(distributor, "TELEGRAM_CHAT_ID", "@testchan"), \
@@ -757,7 +762,7 @@ check("telegram breaker recorded failure", quota_manager.get_breaker_state("tele
 quota_manager.reset_breaker("telegram")
 quota_manager.reset_quota("telegram")
 
-# ── Telegram growth API sandbox ──────────────────────────────────────────────
+# â”€â”€ Telegram growth API sandbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import bots.growth_tracker as gt  # noqa: E402
 gt.reset_for_test = None
 with mock.patch.object(gt, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
@@ -772,7 +777,7 @@ with mock.patch.object(gt, "TELEGRAM_BOT_TOKEN", "12345:fake"), \
     count, err = gt.fetch_member_count()
 check("growth bot api handles api error", count is None and "api_error" in (err or ""))
 
-# ── Instagram Graph two-step publish sandbox ────────────────────────────────
+# â”€â”€ Instagram Graph two-step publish sandbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 quota_manager.reset_quota("instagram")
 quota_manager.reset_breaker("instagram")
 card_file = render_deal_card({"id": "IGTEST", "title": "IG Test", "price": 100, "mrp": 150,
@@ -789,11 +794,11 @@ check("instagram container+publish flow", out.get("status") == "Success (Live)" 
 quota_manager.reset_breaker("instagram")
 quota_manager.reset_quota("instagram")
 
-# ── Twitter/X no-creds -> Playwright disabled -> organic mock ────────────────
+# â”€â”€ Twitter/X no-creds -> Playwright disabled -> organic mock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 out = distributor.live_post_to_twitter({"title": "T", "caption": "C"})
 check("twitter degrades to organic mock", out.get("status") == "Success (Mock)")
 
-# ── PA-API signature shape (offline crypto check with sandbox credentials) ──
+# â”€â”€ PA-API signature shape (offline crypto check with sandbox credentials) â”€â”€
 import importlib  # noqa: E402
 spec = importlib.util.spec_from_file_location(
     "pscraper", os.path.join(PROJECT_ROOT, "scrapers", "product_scraper.py"))
@@ -810,7 +815,7 @@ try:
 except Exception as exc:
     check("PA-API SigV4 header shape valid", False, str(exc))
 
-# ── RSS parsing sandbox (offline XML via mocked transport) ───────────────────
+# â”€â”€ RSS parsing sandbox (offline XML via mocked transport) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 RSS_XML = b"""<?xml version="1.0"?>
 <rss version="2.0"><channel>
 <item><title>Deal One</title><link>https://www.amazon.in/dp/B0AAAAAAA1?tag=x</link>
@@ -837,25 +842,25 @@ try:
 except Exception as exc:
     check("RSS parser extracts ASINs offline", False, str(exc))
 
-# ── Gemini absent -> template fallback keeps ASCI guard ──────────────────────
+# â”€â”€ Gemini absent -> template fallback keeps ASCI guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 from generators.ai_copywriter import generate_multilingual_copy  # noqa: E402
 copies = generate_multilingual_copy({"id": "G1", "title": "Widget", "price": 500, "discount": 10})
 check("copywriter offline fallback trilingual", all(k in copies for k in ("en", "hi", "ta")))
 check("fallback copy carries ASCI guard", "no extra cost" in copies["en"])
 
-# ═════════════════════════════════════════════════════════════════════════════
-# O. BUSINESS LOGIC — quality gate, dedupe, re-alerts, post cap, bandit loop,
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# O. BUSINESS LOGIC â€” quality gate, dedupe, re-alerts, post cap, bandit loop,
 #    revenue reconciliation
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("O. Business Logic & Revenue Controls")
 from bots.deal_scorer import score_deal as _sd  # noqa: E402
 import config as biz_cfg  # noqa: E402
 
-# ── Quality gate: weak deals never reach the queue ───────────────────────────
+# â”€â”€ Quality gate: weak deals never reach the queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 weak = _sd({"id": "WEAK-1", "title": "Weak deal", "price": 100.0, "discount": 2}, record=True)
 check("quality gate threshold defined", biz_cfg.MIN_DEAL_SCORE >= 0 and biz_cfg.DAILY_POST_CAP >= 1)
 
-# ── Bandit variant wiring end-to-end ─────────────────────────────────────────
+# â”€â”€ Bandit variant wiring end-to-end â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 conn = sqlite3.connect(DB_PATH)
 vrow = conn.execute("SELECT product_id, variant, caption FROM campaigns WHERE variant IN ('A','B') LIMIT 1").fetchone()
 conn.close()
@@ -876,7 +881,7 @@ if pub_v:
 else:
     check("public go-link carries var param", True, "(no published variant campaign)")
 
-# ── Dedupe: second sweep of same sector creates no duplicate products ────────
+# â”€â”€ Dedupe: second sweep of same sector creates no duplicate products â”€â”€â”€â”€â”€â”€â”€â”€
 before_ids = {r[0] for r in sqlite3.connect(DB_PATH).execute(
     "SELECT DISTINCT product_id FROM campaigns").fetchall()}
 client.post("/api/run_pipeline", json={"sector": "electronics"})
@@ -885,7 +890,7 @@ after_ids = {r[0] for r in sqlite3.connect(DB_PATH).execute(
 check("dedupe blocks repeat alerts within window", after_ids == before_ids or len(after_ids - before_ids) == 0,
       f"new pids: {after_ids - before_ids}")
 
-# ── Further-drop re-alert bypasses dedupe ─────────────────────────────────────
+# â”€â”€ Further-drop re-alert bypasses dedupe â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 some_pid = sorted(before_ids)[0]
 old_min = db_manager.get_lowest_recorded_price(some_pid)
 if old_min:
@@ -893,11 +898,11 @@ if old_min:
     deeper = _sd(deeper, record=True)
     check("re-alert detected on deeper drop", deeper["is_lowest_ever"] and deeper["price"] < old_min)
 
-# ── Daily posting cap arithmetic ─────────────────────────────────────────────
+# â”€â”€ Daily posting cap arithmetic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 today_count = db_manager.count_posts_today()
 check("count_posts_today tracks distributions", today_count >= 1)
 
-# ── Revenue reconciliation import (Amazon sends no postbacks) ────────────────
+# â”€â”€ Revenue reconciliation import (Amazon sends no postbacks) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resp = client.post("/api/conversions/import", json={"rows": [
     {"transaction_id": "IMP-001", "product_id": "IMPORT-PROD", "session_id": "",
      "sale_amount": 4999.0, "commission_amount": 149.97},
@@ -926,10 +931,10 @@ check("viewer blocked from revenue import", resp.status_code == 403)
 client.get("/logout")
 login()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# P. GROWTH SURFACES — multi-network links, WhatsApp kit, repurposing,
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# P. GROWTH SURFACES â€” multi-network links, WhatsApp kit, repurposing,
 #    auto-pin, newsletter
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("P. Multi-Network, Repurposing, Auto-Pin, Newsletter")
 from bots.link_adapter import build_link, detect_store  # noqa: E402
 import bots.link_adapter as link_adapter  # noqa: E402
@@ -964,7 +969,7 @@ srow = conn.execute("SELECT target_url FROM campaigns WHERE target_url LIKE '%ta
 conn.close()
 check("saved deals carry affiliate-tagged URLs", srow is not None and "tag=" in (srow[0] or ""))
 
-# ── WhatsApp deep-link share kit ─────────────────────────────────────────────
+# â”€â”€ WhatsApp deep-link share kit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resp = client.get(f"/api/share_links?campaign_id={pub_camp}&channels=whatsapp")
 wdata = resp.get_json()
 wlink = (wdata.get("links") or [{}])[0]
@@ -972,7 +977,7 @@ check("whatsapp deep-link generated",
       wlink.get("channel") == "whatsapp" and wlink["url"].startswith("https://wa.me/?text=")
       and wlink.get("mode") == "deep-link")
 
-# ── Shorts / Pinterest repackaging ───────────────────────────────────────────
+# â”€â”€ Shorts / Pinterest repackaging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resp = client.post(f"/api/repackage/{pub_camp}")
 rdata = resp.get_json()
 shorts_rel = rdata.get("shorts_cover", "")
@@ -985,7 +990,7 @@ check("repackaged assets exist on disk",
 resp = client.post("/api/repackage/999999")
 check("repackage unknown campaign 404", resp.status_code == 404)
 
-# ── Auto-pin top-EV deal ─────────────────────────────────────────────────────
+# â”€â”€ Auto-pin top-EV deal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 from bots.pinner import pin_top_deal  # noqa: E402
 res = pin_top_deal()
 check("pinner skips cleanly without telegram message ids",
@@ -1012,7 +1017,7 @@ status = scheduler_engine.get_status()
 job_ids_p = {j["job_id"] for j in status.get("jobs", [])}
 check("daily_pin job registered", "daily_pin" in job_ids_p)
 
-# ── Newsletter: double opt-in lifecycle ──────────────────────────────────────
+# â”€â”€ Newsletter: double opt-in lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resp = anon.post("/subscribe", data={"email": "not-an-email"}, follow_redirects=False)
 check("subscribe rejects invalid email", resp.status_code in (302, 400))
 resp = client.post("/subscribe", data={"email": "reader@example.com"})
@@ -1044,7 +1049,7 @@ tokens = sqlite3.connect(DB_PATH).execute(
     "SELECT COUNT(*) FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()[0]
 check("duplicate subscribe stays single-row", tokens == 1)
 
-# Unsubscribe with the CURRENT token — one click, honored instantly.
+# Unsubscribe with the CURRENT token â€” one click, honored instantly.
 fresh_token = sqlite3.connect(DB_PATH).execute(
     "SELECT token FROM newsletter_subscribers WHERE email='reader@example.com'").fetchone()[0]
 resp = anon.get(f"/unsubscribe?token={fresh_token}", follow_redirects=False)
@@ -1058,9 +1063,9 @@ check("unsubscribed address excluded from recipients",
 resp = client.get("/subscribe")
 check("public subscribe page renders", resp.status_code == 200 and "/subscribe" in resp.get_data(as_text=True))
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Q. OPERATOR DUTIES CONSOLE — readiness, grievance, auto-secure, GST, checks
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Q. OPERATOR DUTIES CONSOLE â€” readiness, grievance, auto-secure, GST, checks
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("Q. Operator Duties Console")
 
 # Readiness payload structure + gating logic.
@@ -1121,14 +1126,14 @@ resp = client.post("/api/compliance/spot_check", json={"reviewed": 5})
 check("viewer blocked from spot-check logging", resp.status_code in (401, 403))
 client.get("/logout"); login()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# R. FULL AUTOMATION — setup wizard, auto spot-check, CA export, duty watch
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# R. FULL AUTOMATION â€” setup wizard, auto spot-check, CA export, duty watch
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 section("R. Full Automation Layer")
 import setup_wizard  # noqa: E402
 from bots import spot_checker  # noqa: E402
 
-# ── Setup wizard validators (offline-safe) ───────────────────────────────────
+# â”€â”€ Setup wizard validators (offline-safe) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 ok_tg, detail_tg = setup_wizard.validate_telegram("", "")
 check("wizard telegram flags missing creds", ok_tg is False)
 state_sm, _ = setup_wizard.validate_smtp("", "", "", "")
@@ -1139,7 +1144,7 @@ check("wizard amazon tag shape check", not setup_wizard.valid_amazon_tag("abc") 
 sec = setup_wizard.gen_secret()
 check("wizard secret generator length", len(sec) == 64 and sec != setup_wizard.gen_secret())
 
-# ── Auto spot-check: PA-API path with mocked live prices ─────────────────────
+# â”€â”€ Auto spot-check: PA-API path with mocked live prices â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 conn = sqlite3.connect(DB_PATH)
 sample_rows = conn.execute(
     "SELECT id, product_id, price FROM campaigns WHERE status='published' LIMIT 3").fetchall()
@@ -1168,7 +1173,7 @@ check("manual path does NOT stamp compliance date",
 status_sp = spot_checker.status()
 check("spot-check status snapshot serves", isinstance(status_sp, dict) and "due" in status_sp)
 
-# ── CA-ready commission export ────────────────────────────────────────────────
+# â”€â”€ CA-ready commission export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resp = client.get("/api/reports/commissions.csv")
 csv_text = resp.get_data(as_text=True)
 check("commission CSV downloads with totals row",
@@ -1176,7 +1181,7 @@ check("commission CSV downloads with totals row",
 resp = anon.get("/api/reports/commissions.csv")
 check("commission CSV blocked anonymously", resp.status_code == 401)
 
-# ── Application pack assembles the Amazon form answers ────────────────────────
+# â”€â”€ Application pack assembles the Amazon form answers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resp = client.get("/api/readiness/application_pack")
 pack = resp.get_json()
 check("application pack includes posts + legal urls",
@@ -1184,7 +1189,7 @@ check("application pack includes posts + legal urls",
       and set(pack.get("legal_urls", {})) == {"disclosure", "privacy", "terms"})
 check("pack links to Associates signup", "affiliate-program.amazon.in" in pack.get("signup_url", ""))
 
-# ── Duty watch fires eligibility nudge once, then stays quiet ─────────────────
+# â”€â”€ Duty watch fires eligibility nudge once, then stays quiet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage FULL eligibility: cross the 10-post bar + every readiness input.
 conn = sqlite3.connect(DB_PATH)
 for i in range(12):
@@ -1224,14 +1229,14 @@ client.post("/settings", data={
 resp = client.post("/api/compliance/spot_check/run")
 check("spot-check run endpoint executes", resp.status_code == 200)
 
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # SUMMARY
-# ═════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 print(f"\n{'=' * 70}")
 print(f"AUDIT RESULTS: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("\nPAIN POINTS FOUND:")
     for f in FAIL:
-        print(f"  ✗ {f}")
+        print(f"  âœ— {f}")
 print("=" * 70)
 sys.exit(1 if FAIL else 0)

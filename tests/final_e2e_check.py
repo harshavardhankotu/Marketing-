@@ -1,10 +1,10 @@
-"""
+﻿"""
 Master end-to-end pipeline verification.
 
 Exercises the complete closed loop against a temp database:
-    sourcing → copy → video/poster → save campaign → preview gate approval
-    → distribution (mock) → tracked click → HMAC postback conversion
-    → A/B bandit + EV ranking reflected in the performance API.
+    sourcing â†’ copy â†’ video/poster â†’ save campaign â†’ preview gate approval
+    â†’ distribution (mock) â†’ tracked click â†’ HMAC postback conversion
+    â†’ A/B bandit + EV ranking reflected in the performance API.
 """
 
 import os
@@ -22,6 +22,11 @@ _TMP = tempfile.mkdtemp(prefix="affiliate_e2e_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["FLASK_SECRET_KEY"] = "test_secret"
 os.environ["POSTBACK_SECRET"] = "test_postback_secret"
+os.environ["ADMIN_DEFAULT_PASSWORD"] = "admin123"   # hermetic creds, not operator .env
+# Sandbox: neutralize live external services regardless of operator .env
+for _k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GEMINI_API_KEY",
+           "SMTP_HOST", "AMAZON_PAAPI_ACCESS_KEY", "AMAZON_PAAPI_SECRET_KEY"):
+    os.environ[_k] = ""
 os.environ["MOCK_SOURCING"] = "True"
 os.environ["FAST_VIDEO_RENDER"] = "True"
 
@@ -52,8 +57,8 @@ def main():
     app_module.app.config["WTF_CSRF_ENABLED"] = False
     client.post("/login", data={"username": "admin", "password": "admin123"})
 
-    # ── 1. Source + compose + persist campaigns ────────────────────────────
-    print("\n== Pipeline: source → compose → persist ==")
+    # â”€â”€ 1. Source + compose + persist campaigns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    print("\n== Pipeline: source â†’ compose â†’ persist ==")
     resp = client.post("/api/run_pipeline", json={"sector": "electronics"})
     check("pipeline run returns 200", resp.status_code == 200, f"got {resp.status_code}: {resp.data}")
     data = resp.get_json()
@@ -64,8 +69,8 @@ def main():
     conn.close()
     check("campaigns persisted as pending_approval", pending > 0, f"got {pending}")
 
-    # ── 2. Preview gate approval → distribution ────────────────────────────
-    print("\n== Preview gate: approve → distribute ==")
+    # â”€â”€ 2. Preview gate approval â†’ distribution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    print("\n== Preview gate: approve â†’ distribute ==")
     conn = sqlite3.connect(DB_PATH)
     camp = conn.execute("SELECT id, product_id, title, target_url FROM campaigns LIMIT 1").fetchone()
     conn.close()
@@ -83,7 +88,7 @@ def main():
     check("campaign status updated to published", status == "published", f"got {status}")
     check("distribution logs written", logs > 0, f"got {logs}")
 
-    # ── 3. Tracked click through /go/ ──────────────────────────────────────
+    # â”€â”€ 3. Tracked click through /go/ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n== Click attribution ==")
     go_url = f"/go/{product_id}?url={target_url}&title=Test&sector=electronics&var=A"
     resp = client.get(go_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}, follow_redirects=False)
@@ -94,7 +99,7 @@ def main():
     conn.close()
     check("human click recorded", clicks >= 1, f"got {clicks}")
 
-    # ── 4. HMAC conversion postback ────────────────────────────────────────
+    # â”€â”€ 4. HMAC conversion postback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n== Conversion postback ==")
     payload = {
         "transaction_id": "E2E_TXN_001",
@@ -109,7 +114,7 @@ def main():
                        content_type="application/json", headers={"X-Signature": sig})
     check("postback accepted (200)", resp.status_code == 200, f"got {resp.status_code}: {resp.data}")
 
-    # ── 5. Optimisation loop: A/B bandit + EV ranking ──────────────────────
+    # â”€â”€ 5. Optimisation loop: A/B bandit + EV ranking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n== Optimisation loop ==")
     resp = client.get("/api/performance")
     data = resp.get_json()
@@ -124,7 +129,7 @@ def main():
     check("conversion reflected in stats",
           data.get("stats", {}).get("total_converted", 0) >= 1)
 
-    # ── 6. Scheduler status ────────────────────────────────────────────────
+    # â”€â”€ 6. Scheduler status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n== Scheduler status ==")
     resp = client.get("/api/scheduler_status")
     check("scheduler status returns 200", resp.status_code == 200)
@@ -133,7 +138,7 @@ def main():
 
 
 if __name__ == "__main__":
-    print("final_e2e_check — master pipeline verification")
+    print("final_e2e_check â€” master pipeline verification")
     main()
     print(f"\nRESULTS: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

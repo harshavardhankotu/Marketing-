@@ -1,5 +1,5 @@
-"""
-Attribution verification — open-redirect protection and bot-click filtering.
+﻿"""
+Attribution verification â€” open-redirect protection and bot-click filtering.
 
 Confirms:
     * trusted affiliate domains (amazon.in) pass the /go/ redirect.
@@ -18,6 +18,11 @@ sys.path.insert(0, PROJECT_ROOT)
 _TMP = tempfile.mkdtemp(prefix="affiliate_attrib_")
 os.environ["DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["FLASK_SECRET_KEY"] = "test_secret"
+os.environ["ADMIN_DEFAULT_PASSWORD"] = "admin123"   # hermetic creds, not operator .env
+# Sandbox: neutralize live external services regardless of operator .env
+for _k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GEMINI_API_KEY",
+           "SMTP_HOST", "AMAZON_PAAPI_ACCESS_KEY", "AMAZON_PAAPI_SECRET_KEY"):
+    os.environ[_k] = ""
 
 import app as app_module  # noqa: E402
 import db_manager  # noqa: E402
@@ -107,7 +112,7 @@ def test_variant_tracking():
 
 
 if __name__ == "__main__":
-    print("verify_attribution — attribution & redirect verification")
+    print("verify_attribution â€” attribution & redirect verification")
     test_open_redirect_protection()
     test_bot_click_filtering()
     test_variant_tracking()
