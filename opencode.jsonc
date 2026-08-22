@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Model: swap freely per machine — teammates may use different providers.
+  "model": "openrouter/stealth/ox-alpha",
+
+  "agent": {
+    "build": {
+      // Hard iteration cap per turn — forces a summary instead of runaway
+      // iteration. (If your opencode build ignores this key, the cap is
+      // enforced procedurally by LOOP_RULES.md + the bash ask-gate below.)
+      "steps": 15,
+      "permission": {
+        "bash": "ask",      // shell requires explicit approval — no unattended shell
+        "edit": "allow",    // edits allowed, constrained by LOOP_RULES.md scopes
+        "webfetch": "deny"  // autonomous runs stay offline; tests need no network
+      }
+    }
+  },
+
+  // Guardrails injected into every session in this repo.
+  "instructions": ["LOOP_RULES.md"]
+}

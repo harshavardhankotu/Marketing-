@@ -77,6 +77,19 @@ Theme**. When MoviePy is installed, `generators/background_factory.py
 --loop --theme <name>` compiles a true seamless-loop MP4; otherwise the CSS
 motion layer animates the still poster (no video required).
 
+## Autonomous loops (opencode)
+
+Guardrailed agent-loop setup lives in three files:
+
+- `opencode.jsonc` — model, per-turn step cap, `bash: ask` gate, offline mode
+- `LOOP_RULES.md` — injected into every session: secrets off-limits, forbidden paths, evidence-based verification
+- `loop-prompt.md` — the current narrow task (one self-contained module at a time)
+
+Workflow: create a disposable branch (`git checkout -b loop/<name>`), open
+`opencode`, paste `@loop-prompt.md`, watch early iterations, then review and
+cherry-pick. Loops NEVER touch auth/postback/legal surfaces or `.env` —
+see `LOOP_RULES.md` §2.
+
 ## Tests
 
 ```bash
