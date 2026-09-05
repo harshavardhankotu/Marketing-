@@ -1,29 +1,19 @@
-# Autonomous Affiliate Marketing & ML Optimization Suite — Dependencies
+# Autonomous B2B Lead Generation, Cold Email & Marketing Suite — Dependencies
 # Install: pip install -r requirements.txt
 
-Flask>=3.0
-flask-login>=0.6.3
-flask-wtf>=1.2
-flask-limiter>=3.5
-bcrypt>=4.0
-python-dotenv>=1.0
-requests>=2.31
-APScheduler>=3.10
+Flask>=3.0.0
+Flask-Login>=0.6.3
+Flask-Limiter>=3.5.0
+Flask-WTF>=1.2.1
+bcrypt>=4.1.2
+python-dotenv>=1.0.1
+dnspython>=2.6.1
+google-genai>=1.0.0
+apscheduler>=3.10.4
+requests>=2.31.0
+beautifulsoup4>=4.12.3
 Pillow>=10.0
-
-# Generative copywriter (Gemini 2.0 Flash)
-google-genai>=1.0
-
-# Video factory (optional — video falls back to poster rendering when absent)
 moviepy>=2.0
 gTTS>=2.5
 numpy>=1.26
-
-# Social distribution (Twitter/X)
-tweepy>=4.14
-
-# Zero-cost X/Twitter browser automation (optional — enable PLAYWRIGHT_X_ENABLED)
-# playwright>=1.44
-
-# Testing
 pytest>=8.0
