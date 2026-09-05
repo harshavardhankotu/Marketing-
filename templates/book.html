@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Book a 15-Minute Strategy Session - GrowthOps</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem;">
+  <div class="login-card" style="max-width: 520px; width: 100%;">
+    {% if confirmed %}
+      <!-- Booking Confirmation View -->
+      <div style="text-align: center; padding: 1rem 0;">
+        <div style="font-size: 3rem; margin-bottom: 0.5rem;">🎉</div>
+        <h1 style="font-size: 1.5rem; font-weight: 700; color: #fff;">Strategy Call Confirmed!</h1>
+        <p style="font-size: 0.9rem; color: var(--text-muted); margin: 0.75rem 0 1.5rem 0;">
+          A calendar invitation has been reserved for <strong>{{ email }}</strong>.
+        </p>
+
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; text-align: left;">
+          <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase;">Scheduled Slot</div>
+          <div style="font-size: 1.1rem; font-weight: 700; color: var(--accent-green); margin-top: 0.25rem;">
+            📅 {{ slot }}
+          </div>
+          <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">
+            Location: Google Meet / Zoom link sent to your inbox.
+          </div>
+        </div>
+
+        <p style="font-size: 0.8rem; color: var(--text-muted);">
+          Our AI outbound architecture will demonstrate live how this exact call was autonomously scheduled.
+        </p>
+      </div>
+
+    {% else %}
+      <!-- Reservation Form View -->
+      <div style="text-align: center; margin-bottom: 1.5rem;">
+        <h1 style="font-size: 1.4rem; font-weight: 700; color: #fff;">
+          15-Min Strategy Discovery
+        </h1>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
+          {{ company_title }} — Direct Scheduling Gateway
+        </p>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <form action="/book/{{ slug }}" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="form-group">
+          <label>Your Full Name</label>
+          <input type="text" name="name" placeholder="Alex Morgan" required>
+        </div>
+
+        <div class="form-group">
+          <label>Work Email Address</label>
+          <input type="email" name="email" placeholder="alex@yourcompany.com" required>
+        </div>
+
+        <div class="form-group">
+          <label>Select an Available Slot</label>
+          <select name="slot" required>
+            <option value="">-- Choose a convenient time --</option>
+            <option value="Thursday at 11:00 AM EST">Thursday at 11:00 AM EST</option>
+            <option value="Thursday at 02:00 PM EST">Thursday at 02:00 PM EST</option>
+            <option value="Friday at 10:30 AM EST">Friday at 10:30 AM EST</option>
+            <option value="Friday at 01:30 PM EST">Friday at 01:30 PM EST</option>
+            <option value="Next Monday at 11:00 AM EST">Next Monday at 11:00 AM EST</option>
+          </select>
+        </div>
+
+        <button type="submit" class="btn" style="width: 100%; justify-content: center; margin-top: 1rem;">
+          ⚡ Confirm Discovery Session
+        </button>
+      </form>
+    {% endif %}
+  </div>
+</body>
+</html>

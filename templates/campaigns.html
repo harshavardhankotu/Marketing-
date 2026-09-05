@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaigns - GrowthOps Outbound</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <header class="navbar">
+    <div class="nav-brand">
+      GrowthOps <span>Outbound</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="/">Dashboard</a></li>
+      <li><a href="/leads">Prospects</a></li>
+      <li><a href="/campaigns" class="active">Campaigns</a></li>
+      <li><a href="/settings">Settings</a></li>
+    </ul>
+    <div>
+      <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
+    </div>
+  </header>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div style="margin-bottom: 2rem;">
+      <h1 style="font-size: 1.5rem; font-weight: 700;">Outreach Campaigns & ICP Targeting</h1>
+      <p style="font-size: 0.85rem; color: var(--text-muted);">
+        Configure autonomous outreach parameters for Self-Growth (Agency) or Client delivery.
+      </p>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+      <!-- Campaign Form -->
+      <div class="form-card" style="max-width: 100%;">
+        <h2 style="font-size: 1.1rem; margin-bottom: 1.25rem;">Create / Update Campaign</h2>
+        <form action="/campaigns" method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="form-group">
+            <label>Campaign Name</label>
+            <input type="text" name="name" placeholder="e.g. AI Agency Growth Q4" required>
+          </div>
+
+          <div class="form-group">
+            <label>Engine Mode</label>
+            <select name="mode">
+              <option value="self">Self-Mode (Internal Agency Growth)</option>
+              <option value="client">Client-Mode (Customer Outbound Delivery)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Target ICP / Niche</label>
+            <input type="text" name="target_niche" placeholder="e.g. B2B SaaS Founders & Tech Consultancies" required>
+          </div>
+
+          <div class="form-group">
+            <label>Core Value Proposition</label>
+            <textarea name="value_prop" rows="3" placeholder="Explain how you book 15-25 qualified calls/month for their specific business..." required style="width: 100%; padding: 0.65rem 0.85rem; background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; color: #fff; font-size: 0.9rem; font-family: inherit;"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Meeting Booking Link (Cal.com / Calendly)</label>
+            <input type="url" name="booking_link" placeholder="https://cal.com/your-team/discovery" required>
+          </div>
+
+          <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem;">
+            <input type="checkbox" name="active" id="active_check" checked style="width: auto;">
+            <label for="active_check" style="margin-bottom: 0; cursor: pointer;">Set as Active Campaign</label>
+          </div>
+
+          <button type="submit" class="btn" style="width: 100%; justify-content: center;">
+            💾 Save Campaign Configuration
+          </button>
+        </form>
+      </div>
+
+      <!-- Existing Campaigns List -->
+      <div>
+        <h2 style="font-size: 1.1rem; margin-bottom: 1.25rem;">Configured Campaigns</h2>
+        {% for c in campaigns %}
+          <div class="stat-card" style="margin-bottom: 1rem; border-left: 4px solid {% if c.active %}var(--accent-green){% else %}var(--border-color){% endif %};">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+              <div>
+                <h3 style="font-size: 1rem; font-weight: 700; color: #fff;">{{ c.name }}</h3>
+                <span class="badge-mode {% if c.mode == 'self' %}mode-self{% else %}mode-client{% endif %}" style="margin-top: 0.25rem;">
+                  {{ c.mode|upper }}
+                </span>
+                {% if c.active %}
+                  <span class="status-badge status-valid" style="margin-left: 0.25rem;">ACTIVE</span>
+                {% endif %}
+              </div>
+            </div>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0.75rem 0 0.25rem 0;">
+              <strong>Target ICP:</strong> {{ c.target_niche }}
+            </p>
+            <p style="font-size: 0.85rem; color: var(--text-main); margin-bottom: 0.5rem;">
+              {{ c.value_prop }}
+            </p>
+            <p style="font-size: 0.8rem; color: var(--accent-blue);">
+              🔗 {{ c.booking_link }}
+            </p>
+          </div>
+        {% else %}
+          <p style="color: var(--text-muted);">No campaigns configured yet.</p>
+        {% endfor %}
+      </div>
+    </div>
+  </main>
+</body>
+</html>

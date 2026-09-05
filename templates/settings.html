@@ -7,19 +7,20 @@
   <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
-  <nav class="navbar">
+  <header class="navbar">
     <div class="nav-brand">
       GrowthOps <span>Outbound</span>
     </div>
     <ul class="nav-links">
-      <li><a href="/">Overview</a></li>
-      <li><a href="/leads">Pipeline</a></li>
+      <li><a href="/">Dashboard</a></li>
+      <li><a href="/leads">Prospects</a></li>
+      <li><a href="/campaigns">Campaigns</a></li>
       <li><a href="/settings" class="active">Settings</a></li>
     </ul>
     <div>
-      <a href="/" class="btn btn-secondary">← Back to Overview</a>
+      <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
     </div>
-  </nav>
+  </header>
 
   <main class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -30,46 +31,114 @@
       {% endif %}
     {% endwith %}
 
-    <h1 style="font-size: 1.5rem; margin-bottom: 1.5rem;">System & Outreach Settings</h1>
+    <div style="margin-bottom: 2rem;">
+      <h1 style="font-size: 1.5rem; font-weight: 700;">Engine Safeguards & Infrastructure Settings</h1>
+      <p style="font-size: 0.85rem; color: var(--text-muted);">
+        Tune deliverability pacing, operational mode, and integration credentials.
+      </p>
+    </div>
 
-    <div class="form-card">
-      <form action="/settings" method="POST">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 2rem;">
+      <!-- Operational Configuration Form -->
+      <div class="form-card" style="max-width: 100%;">
+        <h2 style="font-size: 1.1rem; margin-bottom: 1.25rem;">Deliverability & Engine Settings</h2>
 
-        <div class="form-group">
-          <label>Engine Operation Mode</label>
-          <select name="engine_mode">
-            <option value="self" {% if settings.engine_mode == 'self' %}selected{% endif %}>
-              Self-Growth (Internal Agency Leads)
-            </option>
-            <option value="client" {% if settings.engine_mode == 'client' %}selected{% endif %}>
-              Client-Outreach (Client Delivery Mode)
-            </option>
-          </select>
+        <form action="/settings" method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="form-group">
+            <label>Engine Operating Mode</label>
+            <select name="engine_mode">
+              <option value="self" {% if settings.engine_mode == 'self' %}selected{% endif %}>
+                Self-Mode (Internal Agency Growth & Self-Booking)
+              </option>
+              <option value="client" {% if settings.engine_mode == 'client' %}selected{% endif %}>
+                Client-Mode (Customer Pipeline Delivery)
+              </option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Public Booking Gateway URL (Cal.com / Calendly)</label>
+            <input type="url" name="public_booking_url" value="{{ settings.public_booking_url or '' }}" required>
+          </div>
+
+          <div class="form-group">
+            <label>Daily Outreach Hard Cap (Emails/Day per SMTP Account)</label>
+            <input type="number" name="daily_email_cap" value="{{ settings.daily_email_cap or '30' }}" min="5" max="50" required>
+            <small style="color: var(--text-muted); font-size: 0.75rem;">Strictly caps volume to 30/day to maintain 99%+ primary inbox placement.</small>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label>Min Pacing Delay (Sec)</label>
+              <input type="number" name="min_send_delay" value="{{ settings.min_send_delay or '120' }}" min="60" max="600" required>
+            </div>
+            <div class="form-group">
+              <label>Max Pacing Delay (Sec)</label>
+              <input type="number" name="max_send_delay" value="{{ settings.max_send_delay or '240' }}" min="120" max="1200" required>
+            </div>
+          </div>
+
+          <button type="submit" class="btn" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
+            💾 Save Engine Parameters
+          </button>
+        </form>
+      </div>
+
+      <!-- Infrastructure Status Readout -->
+      <div>
+        <div class="stat-card" style="margin-bottom: 1.5rem;">
+          <h2 style="font-size: 1.1rem; margin-bottom: 1rem;">Infrastructure Health</h2>
+
+          <div style="margin-bottom: 1rem;">
+            <div style="font-size: 0.8rem; color: var(--text-muted);">SMTP Outbound Relay</div>
+            <div style="font-weight: 600; color: #fff; margin-top: 0.2rem;">
+              {{ config.SMTP_HOST }}:{{ config.SMTP_PORT }}
+            </div>
+            <div style="font-size: 0.75rem; color: var(--accent-cyan);">Authenticated STARTTLS (Port 587)</div>
+          </div>
+
+          <div style="margin-bottom: 1rem;">
+            <div style="font-size: 0.8rem; color: var(--text-muted);">Gemini 2.0 Flash AI Engine</div>
+            <div style="font-weight: 600; margin-top: 0.2rem;">
+              {% if config.GEMINI_SET %}
+                <span class="status-badge status-valid">ACTIVE & CONNECTED</span>
+              {% else %}
+                <span class="status-badge status-invalid">USING DETERMINISTIC TEMPLATES</span>
+              {% endif %}
+            </div>
+          </div>
+
+          <div style="margin-bottom: 1rem;">
+            <div style="font-size: 0.8rem; color: var(--text-muted);">Telegram Bot Alert Channel</div>
+            <div style="font-weight: 600; margin-top: 0.2rem;">
+              {% if config.TELEGRAM_SET %}
+                <span class="status-badge status-valid">ENABLED</span>
+              {% else %}
+                <span class="status-badge status-new">MOCK / LOGGED LOCALLY</span>
+              {% endif %}
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">SQLite Database Mode</div>
+            <div style="font-weight: 600; color: var(--accent-green); margin-top: 0.2rem;">
+              WAL Mode + 7-Day Hot Backup Online
+            </div>
+          </div>
         </div>
 
-        <div class="form-group">
-          <label>Public Booking URL (Cal.com / Calendly)</label>
-          <input type="url" name="public_booking_url" value="{{ settings.public_booking_url or '' }}" required>
+        <div class="stat-card">
+          <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Webhook Gateway Endpoint</h3>
+          <code style="font-size: 0.8rem; background: var(--bg-primary); padding: 0.4rem 0.6rem; border-radius: 4px; display: block; word-break: break-all;">
+            POST /api/webhook/booking
+          </code>
+          <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+            Paste this URL into your Cal.com or Calendly Webhook settings.
+          </p>
         </div>
-
-        <div class="form-group">
-          <label>Daily Outreach Hard Cap (Emails/Day)</label>
-          <input type="number" name="daily_email_cap" value="{{ settings.daily_email_cap or '30' }}" min="5" max="100" required>
-        </div>
-
-        <div class="form-group">
-          <label>SMTP Host</label>
-          <input type="text" name="smtp_host" value="{{ config.SMTP_HOST }}" readonly style="opacity: 0.7;">
-        </div>
-
-        <div class="form-group">
-          <label>SMTP Port</label>
-          <input type="text" name="smtp_port" value="{{ config.SMTP_PORT }}" readonly style="opacity: 0.7;">
-        </div>
-
-        <button type="submit" class="btn">💾 Save Configuration</button>
-      </form>
+      </div>
     </div>
   </main>
 </body>

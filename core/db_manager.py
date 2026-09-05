@@ -1,29 +1,28 @@
 """
 core/db_manager.py
-Thread-safe, WAL-enabled SQLite database manager for Autonomous B2B Lead Generation & Call-Booking Engine.
-Enforces strict foreign keys, atomic BEGIN IMMEDIATE writes, and guaranteed connection termination.
+Zero-marginal-cost SQLite database manager for B2B Outbound Engine.
+Enforces WAL mode (PRAGMA journal_mode=WAL;), foreign keys, atomic BEGIN IMMEDIATE writes,
+guaranteed connection termination via context managers, and online transaction-safe backups.
 """
 
+import os
 import sqlite3
 import sys
-from pathlib import Path
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import bcrypt
 
-# Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import DB_PATH, ADMIN_EMAIL, ADMIN_PASSWORD, PUBLIC_BOOKING_URL, ENGINE_MODE
+from core.config import DB_PATH, BACKUP_DIR, ADMIN_EMAIL, ADMIN_PASSWORD, PUBLIC_BOOKING_URL, ENGINE_MODE
 
 
 def get_connection(timeout: float = 30.0) -> sqlite3.Connection:
-    """
-    Creates and configures a SQLite connection with WAL mode and foreign keys enabled.
-    """
+    """Creates a SQLite connection with WAL mode and foreign keys enabled."""
     conn = sqlite3.connect(str(DB_PATH), timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -35,8 +34,8 @@ def get_connection(timeout: float = 30.0) -> sqlite3.Connection:
 @contextmanager
 def get_db_cursor(commit: bool = False):
     """
-    Context manager that yields a cursor and guarantees connection closure.
-    If commit is True, begins an IMMEDIATE transaction and commits upon success.
+    Context manager yielding a cursor with guaranteed connection closure.
+    Acquires BEGIN IMMEDIATE write locks when commit=True.
     """
     conn = get_connection()
     try:
@@ -46,21 +45,23 @@ def get_db_cursor(commit: bool = False):
         yield cursor
         if commit:
             conn.commit()
-    except Exception as e:
+    except Exception as exc:
         if commit:
-            conn.rollback()
-        raise e
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise exc
     finally:
         conn.close()
 
 
 def setup_database() -> None:
     """
-    Initializes the database schema with strict integrity constraints,
-    foreign keys, indices, and default seed configurations.
+    Initializes all 6 database tables, indexes, and initial seeds.
     """
     with get_db_cursor(commit=True) as cursor:
-        # 1. Leads table
+        # 1. Leads Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,12 +77,10 @@ def setup_database() -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-
-        # Indices for fast queries and pipeline filters
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status, verification_status);")
 
-        # 2. Campaigns table
+        # 2. Campaigns Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS campaigns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,14 +89,12 @@ def setup_database() -> None:
             target_niche TEXT,
             value_prop TEXT,
             booking_link TEXT,
-            step1_prompt TEXT,
-            step2_prompt TEXT,
             active INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        # 3. Outreach Logs table
+        # 3. Outreach Logs Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS outreach_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,7 +104,7 @@ def setup_database() -> None:
             subject TEXT NOT NULL,
             body TEXT NOT NULL,
             sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            message_id TEXT,
+            status TEXT CHECK(status IN ('sent', 'failed')) DEFAULT 'sent',
             error_message TEXT,
             FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
             FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL
@@ -115,7 +112,13 @@ def setup_database() -> None:
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_lead ON outreach_logs(lead_id);")
 
-        # 4. Booking Events table
+        # Column migration: ensure status column exists if table was created in an earlier phase
+        cursor.execute("PRAGMA table_info(outreach_logs);")
+        outreach_cols = [r[1] for r in cursor.fetchall()]
+        if "status" not in outreach_cols:
+            cursor.execute("ALTER TABLE outreach_logs ADD COLUMN status TEXT DEFAULT 'sent';")
+
+        # 4. Booking Events Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS booking_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +133,7 @@ def setup_database() -> None:
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_booking_email ON booking_events(attendee_email);")
 
-        # 5. System Settings table
+        # 5. System Settings Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_settings (
             key TEXT PRIMARY KEY,
@@ -138,7 +141,7 @@ def setup_database() -> None:
         );
         """)
 
-        # 6. Users table
+        # 6. Users Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,7 +151,7 @@ def setup_database() -> None:
         );
         """)
 
-        # Seed default admin user if absent
+        # Seed default admin user
         cursor.execute("SELECT id FROM users WHERE email = ?", (ADMIN_EMAIL,))
         if not cursor.fetchone():
             hashed_pwd = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -162,32 +165,77 @@ def setup_database() -> None:
             "engine_mode": ENGINE_MODE,
             "daily_email_cap": "30",
             "public_booking_url": PUBLIC_BOOKING_URL,
-            "smtp_configured": "0"
+            "min_send_delay": "120",
+            "max_send_delay": "240"
         }
         for k, v in default_settings.items():
-            cursor.execute(
-                "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)",
-                (k, v)
-            )
+            cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, v))
 
-        # Seed default primary campaign
-        cursor.execute("SELECT id FROM campaigns WHERE name = ?", ("Default Self-Growth Campaign",))
+        # Seed initial self and client campaigns
+        cursor.execute("SELECT id FROM campaigns WHERE mode = 'self'")
         if not cursor.fetchone():
             cursor.execute("""
-            INSERT INTO campaigns (name, mode, target_niche, value_prop, booking_link, step1_prompt, step2_prompt, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            INSERT INTO campaigns (name, mode, target_niche, value_prop, booking_link, active)
+            VALUES (?, ?, ?, ?, ?, 1)
             """, (
-                "Default Self-Growth Campaign",
+                "Self-Growth Autonomous Outbound",
                 "self",
-                "B2B Agencies & SaaS",
-                "We install autonomous AI lead generation & call booking engines that book 15-25 qualified calls/month.",
-                PUBLIC_BOOKING_URL,
-                "Write an ultra-concise 3-4 sentence cold email based on the company's trigger signal.",
-                "Write a 2-sentence follow-up asking if solving their growth bottleneck is currently a priority.",
+                "B2B Agencies & Tech Consultancies",
+                "We deploy an autonomous AI cold outbound and meeting-booking infrastructure that books 15-25 qualified discovery calls each month on complete autopilot.",
+                PUBLIC_BOOKING_URL
+            ))
+
+        cursor.execute("SELECT id FROM campaigns WHERE mode = 'client'")
+        if not cursor.fetchone():
+            cursor.execute("""
+            INSERT INTO campaigns (name, mode, target_niche, value_prop, booking_link, active)
+            VALUES (?, ?, ?, ?, ?, 0)
+            """, (
+                "Client Sample Campaign",
+                "client",
+                "Mid-Market SaaS Companies",
+                "We help software leaders streamline cloud operations and scale ARR by 40% with zero engineering overhead.",
+                PUBLIC_BOOKING_URL
             ))
 
 
-# ─── Lead Management Helpers ──────────────────────────────────────────────────
+def backup_database_online() -> str:
+    """
+    Hot transaction-safe online SQLite backup via sqlite3.Connection.backup.
+    Writes snapshot to data/backups/outbound_backup_YYYYMMDD.db without stopping writes.
+    Purges backup snapshots older than 7 days.
+    """
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d")
+    backup_file = BACKUP_DIR / f"outbound_backup_{timestamp}.db"
+
+    source_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=30.0)
+    target_conn = sqlite3.connect(str(backup_file))
+
+    try:
+        with source_conn:
+            with target_conn:
+                source_conn.backup(target_conn, pages=100, sleep=0.01)
+        print(f"[db_manager] Online backup completed: {backup_file}")
+    finally:
+        source_conn.close()
+        target_conn.close()
+
+    # Rolling retention: keep newest 7 days of backups
+    cutoff = datetime.now() - timedelta(days=7)
+    for p in BACKUP_DIR.glob("outbound_backup_*.db"):
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime)
+            if mtime < cutoff:
+                p.unlink()
+                print(f"[db_manager] Purged old backup: {p.name}")
+        except Exception as e:
+            print(f"[db_manager] Error during backup retention sweep: {e}")
+
+    return str(backup_file)
+
+
+# ─── Data Access Helpers ───────────────────────────────────────────────────────
 
 def insert_lead(
     company_name: str,
@@ -197,20 +245,19 @@ def insert_lead(
     role: Optional[str] = None,
     industry: Optional[str] = None,
     trigger_signal: Optional[str] = None,
-    verification_status: str = "pending"
+    verification_status: str = "pending",
+    status: str = "queued"
 ) -> Optional[int]:
-    """
-    Inserts a newly scraped/discovered lead safely with transactional write-locks.
-    Returns the lead ID if inserted, or None if the email already exists.
-    """
+    """Inserts a lead atomically; returns lead ID or None if duplicate email."""
     with get_db_cursor(commit=True) as cursor:
         cursor.execute("SELECT id FROM leads WHERE email = ?", (email.strip().lower(),))
         if cursor.fetchone():
             return None
 
         cursor.execute("""
-        INSERT INTO leads (company_name, website, contact_name, email, role, industry, trigger_signal, verification_status, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new')
+        INSERT INTO leads (
+            company_name, website, contact_name, email, role, industry, trigger_signal, verification_status, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_name.strip(),
             website.strip() if website else None,
@@ -219,141 +266,150 @@ def insert_lead(
             role.strip() if role else None,
             industry.strip() if industry else None,
             trigger_signal.strip() if trigger_signal else None,
-            verification_status
+            verification_status,
+            status
         ))
         return cursor.lastrowid
 
 
 def update_lead_status(lead_id: int, status: str) -> bool:
-    """
-    Updates the outreach status of a lead.
-    """
+    """Updates lead pipeline status."""
     with get_db_cursor(commit=True) as cursor:
         cursor.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
         return cursor.rowcount > 0
 
 
-def update_lead_verification(lead_id: int, verification_status: str) -> bool:
-    """
-    Updates the email verification status of a lead ('valid', 'invalid', 'pending').
-    """
-    with get_db_cursor(commit=True) as cursor:
-        cursor.execute(
-            "UPDATE leads SET verification_status = ? WHERE id = ?",
-            (verification_status, lead_id)
-        )
-        return cursor.rowcount > 0
-
-
-def get_lead_by_id(lead_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Retrieves a single lead record by ID.
-    """
+def get_lead_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Retrieves a single lead by email address."""
     with get_db_cursor(commit=False) as cursor:
-        cursor.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        cursor.execute("SELECT * FROM leads WHERE email = ?", (email.strip().lower(),))
         row = cursor.fetchone()
         return dict(row) if row else None
 
 
-def get_queued_leads(limit: int = 30) -> List[Dict[str, Any]]:
+def get_leads_for_outreach(limit: int = 30) -> List[Dict[str, Any]]:
     """
-    Fetches leads that are verified as valid and ready for step 1 or step 2 outreach.
+    Returns leads eligible for Step 1 (status IN ('new', 'queued')) or
+    Step 2 (status = 'emailed_step1' and at least 3 business days since Step 1 sent).
     """
     with get_db_cursor(commit=False) as cursor:
+        # Step 1 eligible leads
         cursor.execute("""
-        SELECT * FROM leads 
-        WHERE verification_status = 'valid' AND status IN ('new', 'queued', 'emailed_step1')
-        ORDER BY created_at ASC
+        SELECT *, 1 AS target_step FROM leads
+        WHERE verification_status = 'valid' AND status IN ('new', 'queued')
+        ORDER BY id ASC
         LIMIT ?
         """, (limit,))
-        return [dict(row) for row in cursor.fetchall()]
+        step1_leads = [dict(r) for r in cursor.fetchall()]
+
+        if len(step1_leads) >= limit:
+            return step1_leads
+
+        remaining = limit - len(step1_leads)
+
+        # Step 2 eligible leads (at least 3 days elapsed since step 1 send, not replied/booked/unsubscribed)
+        cursor.execute("""
+        SELECT l.*, 2 AS target_step FROM leads l
+        JOIN outreach_logs o ON l.id = o.lead_id AND o.step_number = 1
+        WHERE l.verification_status = 'valid' 
+          AND l.status = 'emailed_step1'
+          AND julianday('now') - julianday(o.sent_at) >= 3.0
+        ORDER BY l.id ASC
+        LIMIT ?
+        """, (remaining,))
+        step2_leads = [dict(r) for r in cursor.fetchall()]
+
+        return step1_leads + step2_leads
 
 
-# ─── Campaign & Outreach Helpers ──────────────────────────────────────────────
+# Alias for backward compatibility
+get_queued_leads = get_leads_for_outreach
+
+
+def log_outreach(
+    lead_id: int,
+    campaign_id: Optional[int],
+    step_number: int,
+    subject: str,
+    body: str,
+    status: str = "sent",
+    error_message: Optional[str] = None
+) -> int:
+    """Logs an email dispatch record."""
+    with get_db_cursor(commit=True) as cursor:
+        cursor.execute("""
+        INSERT INTO outreach_logs (lead_id, campaign_id, step_number, subject, body, status, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (lead_id, campaign_id, step_number, subject, body, status, error_message))
+        return cursor.lastrowid
+
+
+def count_emails_sent_today() -> int:
+    """Counts emails successfully sent today (UTC/local date)."""
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute("""
+        SELECT COUNT(*) FROM outreach_logs
+        WHERE status = 'sent' AND date(sent_at) = date('now')
+        """)
+        return cursor.fetchone()[0]
+
+
+def record_booking(
+    attendee_email: str,
+    event_type: str,
+    booking_time: str,
+    raw_payload: str
+) -> int:
+    """Records a meeting booking event and updates lead status to 'booked'."""
+    with get_db_cursor(commit=True) as cursor:
+        cursor.execute("SELECT id FROM leads WHERE email = ?", (attendee_email.strip().lower(),))
+        lead_row = cursor.fetchone()
+        lead_id = lead_row[0] if lead_row else None
+
+        cursor.execute("""
+        INSERT INTO booking_events (lead_id, event_type, booking_time, attendee_email, raw_payload)
+        VALUES (?, ?, ?, ?, ?)
+        """, (lead_id, event_type, booking_time, attendee_email.strip().lower(), raw_payload))
+        event_id = cursor.lastrowid
+
+        if lead_id:
+            cursor.execute("UPDATE leads SET status = 'booked' WHERE id = ?", (lead_id,))
+
+        return event_id
+
 
 def get_active_campaign(mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """
-    Retrieves the currently active outreach campaign.
-    """
+    """Fetches the active campaign for the given mode (or default active)."""
     with get_db_cursor(commit=False) as cursor:
         if mode:
             cursor.execute("SELECT * FROM campaigns WHERE active = 1 AND mode = ? ORDER BY id DESC LIMIT 1", (mode,))
         else:
             cursor.execute("SELECT * FROM campaigns WHERE active = 1 ORDER BY id DESC LIMIT 1")
         row = cursor.fetchone()
+        if not row:
+            cursor.execute("SELECT * FROM campaigns ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
         return dict(row) if row else None
 
 
-def log_outreach_attempt(
-    lead_id: int,
-    step_number: int,
-    subject: str,
-    body: str,
-    campaign_id: Optional[int] = None,
-    message_id: Optional[str] = None,
-    error_message: Optional[str] = None
-) -> int:
-    """
-    Records an email dispatch attempt in outreach_logs with atomic lock.
-    """
-    with get_db_cursor(commit=True) as cursor:
-        cursor.execute("""
-        INSERT INTO outreach_logs (lead_id, campaign_id, step_number, subject, body, message_id, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (lead_id, campaign_id, step_number, subject, body, message_id, error_message))
-        return cursor.lastrowid
-
-
-def count_emails_sent_today() -> int:
-    """
-    Calculates the total successful emails dispatched in the current UTC calendar day.
-    """
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Retrieves user row by email."""
     with get_db_cursor(commit=False) as cursor:
-        cursor.execute("""
-        SELECT COUNT(*) FROM outreach_logs
-        WHERE error_message IS NULL AND date(sent_at) = date('now')
-        """)
-        return cursor.fetchone()[0]
+        cursor.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
-# ─── Booking Gateway Helpers ──────────────────────────────────────────────────
-
-def record_booking_event(
-    attendee_email: str,
-    event_type: str,
-    booking_time: Optional[str] = None,
-    raw_payload: Optional[str] = None
-) -> int:
-    """
-    Processes incoming Cal.com / Calendly booking webhooks.
-    Associates the attendee email with a lead if found, updates status to 'booked'.
-    """
-    with get_db_cursor(commit=True) as cursor:
-        # Find lead if already in database
-        cursor.execute("SELECT id FROM leads WHERE email = ?", (attendee_email.strip().lower(),))
-        lead_row = cursor.fetchone()
-        lead_id = lead_row[0] if lead_row else None
-
-        # Insert booking record
-        cursor.execute("""
-        INSERT INTO booking_events (lead_id, event_type, booking_time, attendee_email, raw_payload)
-        VALUES (?, ?, ?, ?, ?)
-        """, (lead_id, event_type, booking_time, attendee_email.strip().lower(), raw_payload))
-        booking_id = cursor.lastrowid
-
-        # Update lead status if matched
-        if lead_id:
-            cursor.execute("UPDATE leads SET status = 'booked' WHERE id = ?", (lead_id,))
-
-        return booking_id
+def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieves user row by ID."""
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
-# ─── Analytics & KPI Overview ─────────────────────────────────────────────────
-
-def get_kpi_overview() -> Dict[str, Any]:
-    """
-    Computes real-time conversion and performance metrics for the dashboard.
-    """
+def get_dashboard_metrics() -> Dict[str, Any]:
+    """Calculates all key performance indicators for the dashboard."""
     with get_db_cursor(commit=False) as cursor:
         cursor.execute("SELECT COUNT(*) FROM leads")
         total_leads = cursor.fetchone()[0]
@@ -361,30 +417,39 @@ def get_kpi_overview() -> Dict[str, Any]:
         cursor.execute("SELECT COUNT(*) FROM leads WHERE verification_status = 'valid'")
         valid_leads = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM outreach_logs WHERE error_message IS NULL")
+        cursor.execute("SELECT COUNT(*) FROM outreach_logs WHERE status = 'sent'")
         emails_sent = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM leads WHERE status = 'replied'")
-        replied_count = cursor.fetchone()[0]
-
         cursor.execute("SELECT COUNT(*) FROM leads WHERE status = 'booked'")
-        booked_count = cursor.fetchone()[0]
+        calls_booked = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM leads WHERE status = 'replied'")
+        replies = cursor.fetchone()[0]
 
         cursor.execute("SELECT value FROM system_settings WHERE key = 'engine_mode'")
-        engine_mode = cursor.fetchone()
-        mode_val = engine_mode[0] if engine_mode else "self"
+        mode_row = cursor.fetchone()
+        current_mode = mode_row[0] if mode_row else "self"
+
+        validation_rate = round((valid_leads / total_leads * 100), 1) if total_leads > 0 else 0.0
 
         return {
             "total_leads": total_leads,
             "valid_leads": valid_leads,
+            "validation_rate": validation_rate,
             "emails_sent": emails_sent,
-            "replies": replied_count,
-            "booked_calls": booked_count,
-            "engine_mode": mode_val,
-            "emails_sent_today": count_emails_sent_today()
+            "emails_sent_today": count_emails_sent_today(),
+            "calls_booked": calls_booked,
+            "replies": replies,
+            "engine_mode": current_mode
         }
+
+
+# Alias for backward compatibility
+get_kpi_overview = get_dashboard_metrics
 
 
 if __name__ == "__main__":
     setup_database()
-    print("Database schema successfully verified and initialized.")
+    print("Database setup complete.")
+    b = backup_database_online()
+    print("Backup verified at:", b)

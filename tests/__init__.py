@@ -1,1 +1,3 @@
-"""Test suite for the Autonomous Affiliate Marketing Suite."""
+"""
+Test package for Autonomous B2B Outbound Engine.
+"""

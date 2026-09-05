@@ -1,13 +1,16 @@
 """
 core/sender_engine.py
-Cold email dispatcher with strict deliverability guards:
-  - Daily hard cap (30 emails/day)
-  - Randomized pacing intervals (120-240s)
-  - Plain-text format with mandatory one-click opt-out footer
-  - SMTP TLS (Port 587) with graceful mock fallback for dev/testing
+Deliverability-optimized humanized cold email dispatcher.
+Enforces:
+  - Daily hard cap (30 emails/day per SMTP account)
+  - Randomized pacing delay (120-240 seconds between sends)
+  - Strict plain-text formatting (MIMEText 'plain') with zero tracking pixels or redirects
+  - Authenticated SMTP submission via Port 587 (STARTTLS) or Port 465 (SSL)
+  - Step 1 and Step 2 cadence handling
 """
 
 import email.utils
+import os
 import random
 import smtplib
 import sys
@@ -15,7 +18,7 @@ import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -26,58 +29,55 @@ from core.config import (
     DAILY_EMAIL_CAP, MIN_SEND_DELAY_SECONDS, MAX_SEND_DELAY_SECONDS
 )
 from core.db_manager import (
-    get_queued_leads, get_active_campaign, update_lead_status,
-    log_outreach_attempt, count_emails_sent_today
+    get_leads_for_outreach, get_active_campaign, update_lead_status,
+    log_outreach, count_emails_sent_today
 )
 from core.ai_writer import generate_outreach_email
 
-OPT_OUT_FOOTER = (
-    "\n\n---\n"
-    "If you would prefer not to receive future messages, simply reply with "
-    "'unsubscribe' and you will be immediately removed from our outreach."
-)
 
-
-def dispatch_single_email(
+def send_smtp_plain_email(
     to_email: str,
     subject: str,
     body: str,
     simulate: bool = False
 ) -> Dict[str, Any]:
     """
-    Sends a plain-text email via smtplib with TLS.
-    If credentials are missing or simulate=True, performs a safe simulation.
+    Dispatches a single plain-text cold email via smtplib.
+    Supports STARTTLS on Port 587 or SSL on Port 465.
+    Falls back to safe mock simulation in test/local environments.
     """
-    full_body = body.strip() + OPT_OUT_FOOTER
-
-    if simulate or not SMTP_USER or not SMTP_PASS or SMTP_USER == "outreach@agency.ai":
-        # Simulation / Local test mode
-        message_id = email.utils.make_msgid(domain="growthops.ai")
-        print(f"[sender_engine:SIMULATION] Dispatched email to {to_email} | Message-ID: {message_id}")
+    # Safe simulation mode if credentials are unconfigured or simulate=True
+    if simulate or not SMTP_USER or not SMTP_PASS or "brevo" in SMTP_HOST and SMTP_USER == "your_smtp_user":
+        msg_id = email.utils.make_msgid(domain="outbound.local")
+        print(f"[sender_engine:MOCK] Dispatched email to {to_email} | Subject: '{subject}' | MsgID: {msg_id}")
         return {
             "success": True,
-            "message_id": message_id,
+            "message_id": msg_id,
             "simulated": True,
             "error": None
         }
 
     try:
-        msg = MIMEMultipart("alternative")
+        # Construct RFC-compliant plain-text email with no HTML parts
+        msg = MIMEText(body, "plain", "utf-8")
         msg["From"] = f"{FROM_NAME} <{SMTP_USER}>"
         msg["To"] = to_email
         msg["Subject"] = subject
         msg["Date"] = email.utils.formatdate(localtime=True)
         msg["Message-ID"] = email.utils.make_msgid(domain=SMTP_HOST)
 
-        # Plain text only
-        msg.attach(MIMEText(full_body, "plain", "utf-8"))
-
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20.0) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, [to_email], msg.as_string())
+        # Port 465 (SSL) vs Port 587 (STARTTLS)
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=25.0) as server:
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(SMTP_USER, [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25.0) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(SMTP_USER, [to_email], msg.as_string())
 
         return {
             "success": True,
@@ -87,7 +87,7 @@ def dispatch_single_email(
         }
 
     except Exception as exc:
-        print(f"[sender_engine] SMTP Dispatch failed for {to_email}: {exc}")
+        print(f"[sender_engine] SMTP dispatch error to {to_email}: {exc}")
         return {
             "success": False,
             "message_id": None,
@@ -96,84 +96,119 @@ def dispatch_single_email(
         }
 
 
-def process_outreach_queue(max_batch: int = 5, pace_sleep: bool = True) -> Dict[str, Any]:
+def process_outreach_queue(
+    max_batch: int = 5,
+    pace_sleep: bool = True,
+    simulate_force: bool = False
+) -> Dict[str, Any]:
     """
-    Scans for valid queued leads and dispatches Step 1 or Step 2 outreach.
-    Respects daily send caps and randomized humanized delays.
+    Executes the outbound dispatch cycle:
+      - Validates daily email hard cap (30/day)
+      - Queries eligible Step 1 and Step 2 prospects
+      - Renders AI proof-of-work copy
+      - Dispatches via SMTP
+      - Applies randomized pacing delay (120-240 seconds)
+      - Updates lead pipeline stages
     """
     sent_today = count_emails_sent_today()
     if sent_today >= DAILY_EMAIL_CAP:
-        print(f"[sender_engine] Daily send cap reached ({sent_today}/{DAILY_EMAIL_CAP}). Pausing queue.")
-        return {"status": "capped", "sent_count": 0, "reason": "Daily limit reached"}
+        print(f"[sender_engine] Daily limit reached ({sent_today}/{DAILY_EMAIL_CAP}). Halting queue.")
+        return {
+            "status": "capped",
+            "sent_count": 0,
+            "sent_today": sent_today,
+            "daily_cap": DAILY_EMAIL_CAP,
+            "reason": f"Daily hard cap of {DAILY_EMAIL_CAP} emails reached"
+        }
 
     campaign = get_active_campaign()
     if not campaign:
-        print("[sender_engine] No active outreach campaign configured.")
+        print("[sender_engine] No active campaign found.")
         return {"status": "no_campaign", "sent_count": 0, "reason": "No active campaign"}
 
     remaining_cap = DAILY_EMAIL_CAP - sent_today
-    batch_size = min(max_batch, remaining_cap)
-    leads = get_queued_leads(limit=batch_size)
+    batch_limit = min(max_batch, remaining_cap)
+    leads = get_leads_for_outreach(limit=batch_limit)
 
     if not leads:
-        print("[sender_engine] No verified leads currently queued for outreach.")
-        return {"status": "idle", "sent_count": 0, "reason": "Queue empty"}
+        print("[sender_engine] No leads currently eligible for outreach.")
+        return {"status": "idle", "sent_count": 0, "reason": "Outreach queue empty"}
 
     dispatched = 0
+    results: List[Dict[str, Any]] = []
 
     for idx, lead in enumerate(leads):
         lead_id = lead["id"]
-        lead_email = lead["email"]
-        current_status = lead["status"]
+        to_email = lead["email"]
+        target_step = lead.get("target_step", 1)
 
-        # Determine step number
-        step_number = 1 if current_status in ("new", "queued") else 2
+        # Generate personalized 4-sentence copy
+        email_pack = generate_outreach_email(lead, campaign)
+        subject = email_pack["subject"]
+        body = email_pack["body"]
 
-        # Generate email content via Gemini 2.0 Flash (or deterministic fallback)
-        email_content = generate_outreach_email(lead, campaign)
-        subject = email_content["subject"]
-        body = email_content["body"]
+        # Dispatch via SMTP
+        send_result = send_smtp_plain_email(
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            simulate=simulate_force
+        )
 
-        # Dispatch
-        result = dispatch_single_email(lead_email, subject, body)
-
-        if result["success"]:
-            new_status = "emailed_step1" if step_number == 1 else "emailed_step2"
+        if send_result["success"]:
+            new_status = "emailed_step1" if target_step == 1 else "emailed_step2"
             update_lead_status(lead_id, new_status)
-            log_outreach_attempt(
+            log_outreach(
                 lead_id=lead_id,
                 campaign_id=campaign["id"],
-                step_number=step_number,
+                step_number=target_step,
                 subject=subject,
                 body=body,
-                message_id=result["message_id"]
+                status="sent"
             )
             dispatched += 1
-            print(f"[sender_engine] Dispatched Step {step_number} to {lead_email} -> {new_status}")
+            results.append({
+                "lead_id": lead_id,
+                "email": to_email,
+                "step": target_step,
+                "status": "sent",
+                "simulated": send_result.get("simulated", False)
+            })
+            print(f"[sender_engine] Sent Step {target_step} to {to_email} -> {new_status}")
         else:
-            log_outreach_attempt(
+            log_outreach(
                 lead_id=lead_id,
                 campaign_id=campaign["id"],
-                step_number=step_number,
+                step_number=target_step,
                 subject=subject,
                 body=body,
-                error_message=result["error"]
+                status="failed",
+                error_message=send_result["error"]
             )
-            print(f"[sender_engine] Error dispatching to {lead_email}: {result['error']}")
+            results.append({
+                "lead_id": lead_id,
+                "email": to_email,
+                "step": target_step,
+                "status": "failed",
+                "error": send_result["error"]
+            })
+            print(f"[sender_engine] Failed to send Step {target_step} to {to_email}: {send_result['error']}")
 
-        # Random humanized delay between emails (skipped on last email or if pace_sleep is False)
+        # Apply randomized human pacing delay between sends
         if pace_sleep and idx < len(leads) - 1:
             delay = random.randint(MIN_SEND_DELAY_SECONDS, MAX_SEND_DELAY_SECONDS)
-            print(f"[sender_engine] Humanized pacing delay: sleeping for {delay}s...")
+            print(f"[sender_engine] Pacing sleep: waiting {delay} seconds before next send...")
             time.sleep(delay)
 
     return {
         "status": "success",
         "sent_count": dispatched,
-        "remaining_cap": DAILY_EMAIL_CAP - (sent_today + dispatched)
+        "sent_today": sent_today + dispatched,
+        "remaining_cap": DAILY_EMAIL_CAP - (sent_today + dispatched),
+        "dispatched_leads": results
     }
 
 
 if __name__ == "__main__":
-    res = process_outreach_queue(max_batch=2, pace_sleep=False)
-    print(f"Queue Result: {res}")
+    report = process_outreach_queue(max_batch=1, pace_sleep=False, simulate_force=True)
+    print("Dispatch cycle complete:", report)

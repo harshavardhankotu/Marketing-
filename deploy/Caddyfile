@@ -1,28 +1,38 @@
-# Autonomous Affiliate Marketing Suite — Caddy reverse proxy
-# Replace 'yourdomain.com' with your actual VPS domain, or use ':80' for plain HTTP testing.
-yourdomain.com {
-    # Reverse proxy public traffic to the internal Gunicorn socket.
-    # Caddy automatically forwards X-Forwarded-For / X-Real-IP so Flask-Limiter
-    # sees real client IPs.
-    reverse_proxy 127.0.0.1:5000
+# Caddyfile - Automated HTTPS & Reverse Proxy for Autonomous B2B Outbound Engine
+# Replace outreach.yourdomain.com with your live domain or server public IP
 
-    # Request logging with rotation.
+outreach.yourdomain.com {
+    # Automated Let's Encrypt SSL / TLS certificate provisioning
+    encode gzip zstd
+
+    # Pass all traffic to Gunicorn bound to localhost:5000
+    reverse_proxy 127.0.0.1:5000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Standard security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), camera=(), microphone=()"
+    }
+
+    # Static asset caching
+    @static {
+        path /static/*
+    }
+    header @static Cache-Control "public, max-age=86400"
+
+    # Access logging
     log {
-        output file /var/log/caddy/affiliate_access.log {
-            roll_size 10mb
+        output file /var/log/caddy/outbound_access.log {
+            roll_size 10MB
             roll_keep 5
         }
     }
-
-    # Security headers.
-    header {
-        X-Frame-Options "SAMEORIGIN"
-        X-Content-Type-Options "nosniff"
-        X-XSS-Protection "1; mode=block"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    }
-
-    # Compression.
-    encode gzip zstd
 }

@@ -3,23 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GrowthOps - Autonomous B2B Lead & Booking Engine</title>
+  <title>GrowthOps Outbound - Autonomous B2B Engine</title>
   <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
-  <nav class="navbar">
+  <!-- Navigation Header -->
+  <header class="navbar">
     <div class="nav-brand">
       GrowthOps <span>Outbound</span>
     </div>
     <ul class="nav-links">
-      <li><a href="/" class="active">Overview</a></li>
-      <li><a href="/leads">Pipeline ({{ kpi.total_leads }})</a></li>
+      <li><a href="/" class="active">Dashboard</a></li>
+      <li><a href="/leads">Prospects ({{ kpi.total_leads }})</a></li>
+      <li><a href="/campaigns">Campaigns</a></li>
       <li><a href="/settings">Settings</a></li>
     </ul>
-    <div>
-      <span class="badge-mode">Mode: {{ kpi.engine_mode }}</span>
+    <div style="display: flex; align-items: center; gap: 1rem;">
+      <span class="badge-mode {% if kpi.engine_mode == 'self' %}mode-self{% else %}mode-client{% endif %}">
+        MODE: {{ kpi.engine_mode|upper }}
+      </span>
+      <a href="/logout" style="color: var(--text-muted); font-size: 0.85rem; text-decoration: none;">Sign Out</a>
     </div>
-  </nav>
+  </header>
 
   <main class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -30,78 +35,99 @@
       {% endif %}
     {% endwith %}
 
-    <!-- KPI Metric Cards -->
-    <div class="stats-grid">
+    <!-- Glassmorphic KPI Metric Cards -->
+    <section class="stats-grid">
       <div class="stat-card">
-        <div class="stat-label">Total Leads Discovered</div>
+        <div class="stat-label">Leads Discovered</div>
         <div class="stat-value">{{ kpi.total_leads }}</div>
-        <div class="stat-sub">{{ kpi.valid_leads }} verified deliverable</div>
+        <div class="stat-sub">{{ kpi.valid_leads }} verified MX deliverable</div>
       </div>
+
+      <div class="stat-card">
+        <div class="stat-label">Validation Rate</div>
+        <div class="stat-value" style="color: var(--accent-cyan);">{{ kpi.validation_rate }}%</div>
+        <div class="stat-sub">Port 53 UDP DNS Verified</div>
+      </div>
+
       <div class="stat-card">
         <div class="stat-label">Dispatched Today</div>
-        <div class="stat-value">{{ kpi.emails_sent_today }} / 30</div>
-        <div class="stat-sub">Strict deliverability cap</div>
+        <div class="stat-value">{{ kpi.emails_sent_today }} <span style="font-size: 1.1rem; color: var(--text-muted);">/ 30</span></div>
+        <div class="stat-sub">Total Dispatched: {{ kpi.emails_sent }}</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">Total Outreach Sent</div>
-        <div class="stat-value">{{ kpi.emails_sent }}</div>
-        <div class="stat-sub">{{ kpi.replies }} direct replies</div>
-      </div>
-      <div class="stat-card" style="border-color: var(--accent-green);">
-        <div class="stat-label">Strategy Calls Booked</div>
-        <div class="stat-value" style="color: var(--accent-green);">{{ kpi.booked_calls }}</div>
-        <div class="stat-sub">Cal.com / Calendly synced</div>
-      </div>
-    </div>
 
-    <!-- Manual Control Panel -->
-    <div class="action-panel">
+      <div class="stat-card" style="border-color: rgba(16, 185, 129, 0.4);">
+        <div class="stat-label">Strategy Calls Booked</div>
+        <div class="stat-value" style="color: var(--accent-green);">{{ kpi.calls_booked }}</div>
+        <div class="stat-sub">Cal.com / Webhook Synced</div>
+      </div>
+    </section>
+
+    <!-- Autonomous Action Controls -->
+    <section class="action-panel">
       <div>
-        <h2 class="panel-title">Autonomous Action Controls</h2>
+        <h2 class="panel-title">⚡ Autonomous Pipeline Control</h2>
         <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Trigger live lead research or force-dispatch queued campaigns.
+          Trigger live B2B target research or immediately process the outbound queue.
         </p>
       </div>
       <div class="btn-group">
         <form action="/api/harvest" method="POST" style="display: flex; gap: 0.5rem;">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="text" name="niche" placeholder="Target Niche (e.g. SaaS)" style="background: var(--bg-card); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;" required value="Digital Agency">
-          <input type="text" name="location" placeholder="Location" style="background: var(--bg-card); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;" required value="Austin TX">
-          <button type="submit" class="btn">⚡ Harvest Leads</button>
+          <input type="text" name="niche" placeholder="ICP Niche (e.g. SaaS)" required value="B2B AI Agencies" style="padding: 0.5rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; font-size: 0.85rem; width: 160px;">
+          <input type="text" name="location" placeholder="City/Region" required value="Austin TX" style="padding: 0.5rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; font-size: 0.85rem; width: 120px;">
+          <button type="submit" class="btn">🔍 Run Lead Scraper</button>
         </form>
         <form action="/api/dispatch" method="POST">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-secondary">🚀 Run Dispatch Queue</button>
+          <button type="submit" class="btn btn-secondary">🚀 Process Dispatch Queue</button>
         </form>
       </div>
-    </div>
+    </section>
 
-    <!-- Active Campaign Info & Recent Leads -->
-    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem;">
-      <div class="stat-card">
-        <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">Active Campaign</h3>
-        {% if campaign %}
-          <p style="font-weight: 600; color: var(--accent-cyan);">{{ campaign.name }}</p>
-          <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0.5rem 0;">
-            <strong>Target:</strong> {{ campaign.target_niche }}
-          </p>
-          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
-            <strong>Value Prop:</strong> {{ campaign.value_prop }}
-          </p>
-          <p style="font-size: 0.85rem;">
-            <strong>Link:</strong> <a href="{{ campaign.booking_link }}" target="_blank" style="color: var(--accent-blue);">{{ campaign.booking_link }}</a>
-          </p>
-        {% else %}
-          <p style="color: var(--text-muted);">No active campaign.</p>
-        {% endif %}
+    <!-- Main Content Layout -->
+    <div style="display: grid; grid-template-columns: 1fr 1.8fr; gap: 1.5rem;">
+      <!-- Active Campaign & Philosophy -->
+      <div>
+        <div class="stat-card" style="margin-bottom: 1.5rem;">
+          <h3 style="font-size: 1rem; margin-bottom: 0.75rem; color: var(--accent-cyan);">Active Campaign</h3>
+          {% if campaign %}
+            <p style="font-weight: 700; font-size: 1.1rem; color: #fff;">{{ campaign.name }}</p>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0.5rem 0;">
+              <strong>Target ICP:</strong> {{ campaign.target_niche }}
+            </p>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+              <strong>Value Proposition:</strong> {{ campaign.value_prop }}
+            </p>
+            <p style="font-size: 0.85rem;">
+              <strong>Booking Gateway:</strong>
+              <a href="{{ campaign.booking_link }}" target="_blank" style="color: var(--accent-blue); text-decoration: none;">
+                {{ campaign.booking_link }}
+              </a>
+            </p>
+          {% else %}
+            <p style="color: var(--text-muted);">No active campaign configured.</p>
+          {% endif %}
+        </div>
+
+        <div class="stat-card">
+          <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">The Recursive Engine Philosophy</h3>
+          <blockquote style="font-size: 0.85rem; color: var(--text-main); font-style: italic; line-height: 1.4; border-left: 2px solid var(--accent-cyan); padding-left: 0.75rem;">
+            "The product that sells for us IS the product: it finds buyers, writes the emails, and books the calls — for our customers and for us."
+          </blockquote>
+        </div>
       </div>
 
+      <!-- Recent Prospects Table -->
       <div class="table-card">
+        <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="font-size: 1rem; font-weight: 600;">Recent Prospect Leads</h3>
+          <a href="/leads" style="font-size: 0.8rem; color: var(--accent-blue); text-decoration: none;">View All Pipeline →</a>
+        </div>
         <table>
           <thead>
             <tr>
               <th>Company</th>
-              <th>Email</th>
+              <th>Contact Email</th>
               <th>Status</th>
               <th>Trigger Signal</th>
             </tr>
@@ -110,19 +136,19 @@
             {% for lead in recent_leads %}
               <tr>
                 <td><strong>{{ lead.company_name }}</strong></td>
-                <td>{{ lead.email }}</td>
+                <td><code>{{ lead.email }}</code></td>
                 <td>
                   <span class="status-badge status-{{ lead.status }}">{{ lead.status }}</span>
                   <span class="status-badge status-{{ lead.verification_status }}">{{ lead.verification_status }}</span>
                 </td>
-                <td style="font-size: 0.8rem; color: var(--text-muted); max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                <td style="font-size: 0.8rem; color: var(--text-muted); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                   {{ lead.trigger_signal }}
                 </td>
               </tr>
             {% else %}
               <tr>
-                <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">
-                  No leads harvested yet. Click 'Harvest Leads' to find targets.
+                <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2.5rem;">
+                  No prospects in database. Click "Run Lead Scraper" to populate leads.
                 </td>
               </tr>
             {% endfor %}

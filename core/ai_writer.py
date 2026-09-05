@@ -1,10 +1,17 @@
 """
 core/ai_writer.py
 Autonomous cold email copywriting engine powered by Google Gemini 2.0 Flash SDK (google-genai).
-Strictly adheres to 4-sentence plain-text high-deliverability conversion architecture.
+Enforces:
+  - Strictly 3 to 4 sentences in body
+  - Plain-text format only (no HTML, no bold, no links except booking URL)
+  - Explicit proof-of-work statement
+  - Spintax variation resolution ({Hi|Hello|Hey}) to prevent mail provider fingerprinting
+  - Mandatory plain-text opt-out footer ("Reply 'STOP' to unsubscribe")
 """
 
 import os
+import random
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -15,8 +22,28 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.config import GEMINI_API_KEY, PUBLIC_BOOKING_URL, FROM_NAME
 
+OPT_OUT_FOOTER = (
+    "\n\n---\n"
+    "Reply 'STOP' to unsubscribe. We honor immediate removal."
+)
 
-def get_deterministic_fallback_copy(
+
+def resolve_spintax(text: str) -> str:
+    """
+    Randomly resolves nested Spintax patterns formatted as {option1|option2|option3}.
+    Prevents mass template fingerprinting by SpamAssassin and Google Postmaster.
+    """
+    pattern = re.compile(r"\{([^{}]+)\}")
+    while True:
+        match = pattern.search(text)
+        if not match:
+            break
+        choices = match.group(1).split("|")
+        text = text[:match.start()] + random.choice(choices) + text[match.end():]
+    return text
+
+
+def get_deterministic_pow_copy(
     company_name: str,
     contact_name: str,
     trigger_signal: str,
@@ -24,19 +51,31 @@ def get_deterministic_fallback_copy(
     booking_url: str
 ) -> Dict[str, str]:
     """
-    Deterministic, high-converting 4-sentence plain text email fallback
-    when Gemini API key is unconfigured or network is unavailable.
+    Deterministic 4-sentence proof-of-work email fallback.
+    Used when Gemini API key is unconfigured or during offline/CI testing.
     """
     first_name = contact_name.split()[0] if contact_name else "there"
-    subject = f"Growth bottleneck at {company_name}"
     
-    # 4 strictly structured sentences
-    s1 = f"Hi {first_name}, I was reviewing {company_name} and noted your current setup ({trigger_signal})."
-    s2 = "This email was researched, verified, and drafted autonomously by our AI outbound engine."
-    s3 = f"{value_prop if value_prop else 'We install autonomous outbound systems that book 15-25 qualified B2B sales calls every month on autopilot.'}"
-    s4 = f"Would you be open to a 10-minute chat this Thursday to see how this works for {company_name}? You can grab a slot directly here: {booking_url}"
+    # Spintax greeting and subject variations
+    subject_template = "{Growth bottleneck|Outbound pipeline inquiry|Quick question} regarding " + company_name
+    subject = resolve_spintax(subject_template)
 
-    body = f"{s1} {s2} {s3} {s4}\n\nBest regards,\n{FROM_NAME}"
+    greeting = resolve_spintax("{Hi|Hello|Hey}") + f" {first_name},"
+
+    # Sentence 1: Observation citing target company and trigger signal
+    s1 = f"I was researching {company_name} and noticed your current setup ({trigger_signal})."
+
+    # Sentence 2: Proof-of-work statement
+    s2 = "This email was autonomously researched, verified, and drafted by our AI outbound engine without human intervention."
+
+    # Sentence 3: Value proposition (15-25 qualified calls/month)
+    default_vp = "We install autonomous outbound systems that book 15-25 qualified pipeline calls every month on complete autopilot."
+    s3 = value_prop if value_prop else default_vp
+
+    # Sentence 4: Low-friction CTA pointing to booking URL
+    s4 = f"Would you be open to a 10-minute discovery chat this Thursday? Grab a time that suits you here: {booking_url}"
+
+    body = f"{greeting}\n\n{s1} {s2} {s3} {s4}\n\nBest regards,\n{FROM_NAME}{OPT_OUT_FOOTER}"
     return {"subject": subject, "body": body}
 
 
@@ -45,30 +84,22 @@ def generate_outreach_email(
     campaign_dict: Dict[str, Any]
 ) -> Dict[str, str]:
     """
-    Generates an ultra-personalized, 3-to-4 sentence plain-text outreach email
-    using Gemini 2.0 Flash.
-
-    Structure:
-      Sentence 1: Specific observation of company & trigger signal.
-      Sentence 2: Proof-of-work statement ("This email was researched, verified, and drafted autonomously by our AI engine").
-      Sentence 3: Specific value proposition (booking 15-25 calls/month).
-      Sentence 4: Low-friction CTA pointing to PUBLIC_BOOKING_URL.
-
-    Returns:
-      dict: {"subject": str, "body": str}
+    Generates a personalized, 3-to-4 sentence plain-text outreach email
+    using Gemini 2.0 Flash or deterministic proof-of-work fallback.
     """
     company_name = lead_dict.get("company_name", "your company")
     contact_name = lead_dict.get("contact_name", "there")
-    trigger_signal = lead_dict.get("trigger_signal", "inbound lead capture friction")
+    trigger_signal = lead_dict.get("trigger_signal", "inbound lead friction observed")
     industry = lead_dict.get("industry", "B2B")
-    
+
     value_prop = campaign_dict.get("value_prop") if campaign_dict else ""
     booking_url = (campaign_dict.get("booking_link") if campaign_dict else None) or PUBLIC_BOOKING_URL
+
     api_key = os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY
 
-    # If Gemini API key is not configured, return deterministic fallback
+    # If API key is absent or default placeholder, use deterministic template
     if not api_key or api_key == "your_gemini_api_key_here":
-        return get_deterministic_fallback_copy(
+        return get_deterministic_pow_copy(
             company_name=company_name,
             contact_name=contact_name,
             trigger_signal=trigger_signal,
@@ -83,42 +114,40 @@ def generate_outreach_email(
         client = genai.Client(api_key=api_key)
 
         prompt = f"""
-You are an elite B2B Cold Email Copywriter. Write a hyper-personalized, ultra-concise cold email to {contact_name} at {company_name}.
+You are an expert B2B deliverability copywriter. Write a 4-sentence plain-text cold email to {contact_name} at {company_name}.
 
-Company Details:
-- Company Name: {company_name}
-- Industry: {industry}
-- Trigger Signal Observed on Website: {trigger_signal}
-- Core Offer/Value Proposition: {value_prop or 'We install autonomous AI sales engines that book 15-25 qualified calls every month.'}
-- Booking URL: {booking_url}
+Context:
+- Company: {company_name} ({industry})
+- Observed Trigger Signal: {trigger_signal}
+- Core Offer / Value Prop: {value_prop or 'We deploy autonomous AI outbound systems booking 15-25 qualified pipeline calls each month.'}
+- Direct Booking Link: {booking_url}
 
-CRITICAL RULES:
-1. Strictly 3 to 4 sentences total in the body.
-2. Plain text only. NO markdown formatting, NO bold (**), NO italics, NO bullet points, NO HTML.
-3. Sentence 1: Direct observation of {company_name} and their trigger signal ({trigger_signal}).
-4. Sentence 2: Explicit proof-of-work statement: "This email was researched, verified, and drafted autonomously by our AI engine."
-5. Sentence 3: State the core value proposition: books 15-25 qualified calls per month for their business.
-6. Sentence 4: Low-friction call to action with the exact booking link: {booking_url}
+STRICT CONSTRAINTS:
+1. Exactly 3 to 4 sentences total in the body.
+2. Plain text only. Absolutely ZERO HTML, markdown bold (**), italics (*), or bullet points.
+3. Sentence 1: Observation citing {company_name} and their specific trigger signal ({trigger_signal}).
+4. Sentence 2: Mandatory proof-of-work statement: "This email was autonomously researched, verified, and drafted by our AI outbound engine without human intervention."
+5. Sentence 3: Value proposition stating how you book 15-25 qualified calls/month for their business.
+6. Sentence 4: Low-friction CTA including the exact booking link: {booking_url}
 
 Output Format:
-Return your response in EXACTLY this format:
-Subject: <compelling, lowercase 3-5 word subject line>
+Subject: <3 to 5 lowercase words>
 Body:
-<the 3-4 sentence body>
+<the exact 3-4 sentence message>
 """
 
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
-                temperature=0.4,
-                max_output_tokens=300
+                temperature=0.3,
+                max_output_tokens=250
             )
         )
 
         output_text = response.text.strip()
         lines = output_text.split("\n")
-        subject = f"Quick question regarding {company_name}"
+        subject = f"Question regarding {company_name}"
         body_lines = []
         is_body = False
 
@@ -129,26 +158,33 @@ Body:
             elif line_str.lower().startswith("body:"):
                 is_body = True
             elif is_body or (not line_str.lower().startswith("subject:") and len(line_str) > 0):
-                # Clean any markdown asterisks if model inserted them
-                cleaned_line = line_str.replace("**", "").replace("*", "")
-                body_lines.append(cleaned_line)
+                # Strip any stray markdown syntax
+                cleaned = line_str.replace("**", "").replace("*", "").replace("#", "")
+                body_lines.append(cleaned)
 
-        body_text = "\n\n".join([l for l in body_lines if l]).strip()
-        if not body_text:
-            body_text = output_text.replace("**", "").replace("*", "")
+        body_content = "\n\n".join([l for l in body_lines if l]).strip()
+        if not body_content:
+            body_content = output_text.replace("**", "").replace("*", "")
 
-        # Append professional sign-off
-        if FROM_NAME not in body_text:
-            body_text += f"\n\nBest,\n{FROM_NAME}"
+        # Apply spintax greeting if not already present
+        if not body_content.lower().startswith(("hi", "hello", "hey")):
+            first_name = contact_name.split()[0] if contact_name else "there"
+            greeting = resolve_spintax("{Hi|Hello|Hey}") + f" {first_name},\n\n"
+            body_content = greeting + body_content
+
+        # Sign-off and mandatory plain text opt-out footer
+        if FROM_NAME not in body_content:
+            body_content += f"\n\nBest regards,\n{FROM_NAME}"
+        body_content += OPT_OUT_FOOTER
 
         return {
-            "subject": subject,
-            "body": body_text
+            "subject": resolve_spintax(subject),
+            "body": body_content
         }
 
     except Exception as exc:
-        print(f"[ai_writer] Gemini API call exception ({exc}), using deterministic fallback.")
-        return get_deterministic_fallback_copy(
+        print(f"[ai_writer] Gemini API call fallback: {exc}")
+        return get_deterministic_pow_copy(
             company_name=company_name,
             contact_name=contact_name,
             trigger_signal=trigger_signal,
@@ -158,18 +194,16 @@ Body:
 
 
 if __name__ == "__main__":
-    sample_lead = {
-        "company_name": "Apex Marketing Lab",
-        "contact_name": "David Miller",
-        "trigger_signal": "Relies on static contact forms | No self-serve booking calendar",
-        "industry": "Performance Marketing"
+    lead = {
+        "company_name": "Kinetic SaaS",
+        "contact_name": "Marcus Vance",
+        "trigger_signal": "Lacks automated online booking calendar",
+        "industry": "Enterprise Software"
     }
-    sample_campaign = {
-        "value_prop": "We install autonomous AI sales engines that book 15-25 qualified calls every month.",
-        "booking_link": "https://cal.com/growthops/demo"
+    camp = {
+        "value_prop": "We install autonomous outbound systems that book 15-25 qualified pipeline calls every month.",
+        "booking_link": "https://cal.com/outbound/15min"
     }
-    res = generate_outreach_email(sample_lead, sample_campaign)
-    print("=== SUBJECT ===")
-    print(res["subject"])
-    print("\n=== BODY ===")
-    print(res["body"])
+    res = generate_outreach_email(lead, camp)
+    print("SUBJECT:", res["subject"])
+    print("BODY:\n" + res["body"])

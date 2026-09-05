@@ -3,27 +3,42 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pipeline Leads - GrowthOps Outbound</title>
+  <title>Prospect Pipeline - GrowthOps Outbound</title>
   <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
-  <nav class="navbar">
+  <header class="navbar">
     <div class="nav-brand">
       GrowthOps <span>Outbound</span>
     </div>
     <ul class="nav-links">
-      <li><a href="/">Overview</a></li>
-      <li><a href="/leads" class="active">Pipeline ({{ leads|length }})</a></li>
+      <li><a href="/">Dashboard</a></li>
+      <li><a href="/leads" class="active">Prospects ({{ leads|length }})</a></li>
+      <li><a href="/campaigns">Campaigns</a></li>
       <li><a href="/settings">Settings</a></li>
     </ul>
     <div>
-      <a href="/" class="btn btn-secondary">← Back to Overview</a>
+      <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
     </div>
-  </nav>
+  </header>
 
   <main class="container">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-      <h1 style="font-size: 1.5rem;">Outbound Pipeline Leads</h1>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+      <div>
+        <h1 style="font-size: 1.5rem; font-weight: 700;">Prospect Pipeline</h1>
+        <p style="font-size: 0.85rem; color: var(--text-muted);">
+          Autonomous lead database with verified deliverability and stage tracking.
+        </p>
+      </div>
+
+      <!-- Filters -->
+      <div style="display: flex; gap: 0.5rem; font-size: 0.85rem;">
+        <a href="/leads" class="btn btn-secondary {% if not current_status and not current_verification %}btn-active{% endif %}">All</a>
+        <a href="/leads?verification=valid" class="btn btn-secondary {% if current_verification == 'valid' %}btn-active{% endif %}">Valid MX</a>
+        <a href="/leads?status=queued" class="btn btn-secondary {% if current_status == 'queued' %}btn-active{% endif %}">Queued</a>
+        <a href="/leads?status=emailed_step1" class="btn btn-secondary {% if current_status == 'emailed_step1' %}btn-active{% endif %}">Step 1 Sent</a>
+        <a href="/leads?status=booked" class="btn btn-secondary {% if current_status == 'booked' %}btn-active{% endif %}">Booked Calls</a>
+      </div>
     </div>
 
     <div class="table-card">
@@ -32,24 +47,29 @@
           <tr>
             <th>ID</th>
             <th>Company</th>
-            <th>Contact</th>
-            <th>Email</th>
-            <th>Verification</th>
-            <th>Outreach Status</th>
-            <th>Trigger Signal</th>
-            <th>Added</th>
+            <th>Contact Person</th>
+            <th>Email Address</th>
+            <th>Deliverability</th>
+            <th>Pipeline Stage</th>
+            <th>Observed Trigger Signal</th>
+            <th>Discovered</th>
           </tr>
         </thead>
         <tbody>
           {% for lead in leads %}
             <tr>
               <td>#{{ lead.id }}</td>
-              <td><strong>{{ lead.company_name }}</strong></td>
-              <td>{{ lead.contact_name or '—' }}</td>
+              <td>
+                <strong>{{ lead.company_name }}</strong>
+                {% if lead.website %}
+                  <br><a href="{{ lead.website }}" target="_blank" style="font-size: 0.75rem; color: var(--text-muted); text-decoration: none;">{{ lead.website[:25] }}...</a>
+                {% endif %}
+              </td>
+              <td>{{ lead.contact_name or 'Founder' }}</td>
               <td><code>{{ lead.email }}</code></td>
               <td>
                 <span class="status-badge status-{{ lead.verification_status }}">
-                  {{ lead.verification_status }}
+                  {{ lead.verification_status|upper }}
                 </span>
               </td>
               <td>
@@ -57,17 +77,17 @@
                   {{ lead.status }}
                 </span>
               </td>
-              <td style="font-size: 0.8rem; color: var(--text-muted); max-width: 260px;">
+              <td style="font-size: 0.8rem; color: var(--text-muted); max-width: 280px;">
                 {{ lead.trigger_signal }}
               </td>
-              <td style="font-size: 0.75rem; color: var(--text-muted);">
+              <td style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;">
                 {{ lead.created_at[:10] if lead.created_at else '—' }}
               </td>
             </tr>
           {% else %}
             <tr>
               <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 3rem;">
-                No leads found in pipeline.
+                No prospects match the selected filter criteria.
               </td>
             </tr>
           {% endfor %}

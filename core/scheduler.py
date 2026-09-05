@@ -1,13 +1,13 @@
 """
 core/scheduler.py
-Production background job manager using APScheduler (Asia/Kolkata timezone).
-Manages business-hours cold email dispatching and nightly online SQLite backups.
+Production background job automation using APScheduler (Asia/Kolkata timezone).
+Features:
+  - Outbound Dispatcher: Scheduled Monday-Friday from 09:00 to 17:00 IST.
+  - Nightly Hot Backup: Daily at 02:00 AM IST calling backup_database_online().
+  - max_instances=1 to prevent duplicate job executions or database locking contention.
 """
 
-import os
-import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import pytz
@@ -17,73 +17,41 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import DB_PATH
+from core.db_manager import backup_database_online
 from core.sender_engine import process_outreach_queue
 
 IST = pytz.timezone("Asia/Kolkata")
-BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
-BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-
 _scheduler: Optional[BackgroundScheduler] = None
 
 
-def backup_sqlite_database() -> str:
-    """
-    Executes a non-blocking, transaction-safe online SQLite backup
-    using sqlite3.Connection.backup() API to data/backups/.
-    Retains rolling backups and logs execution.
-    """
-    print("[scheduler] Starting automated online SQLite database backup...")
-    try:
-        timestamp = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"outbound_backup_{timestamp}.db"
-        target_path = BACKUP_DIR / backup_filename
-
-        # Source connection in read-only / shared WAL mode
-        source_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=30.0)
-        target_conn = sqlite3.connect(str(target_path))
-
-        with source_conn:
-            with target_conn:
-                source_conn.backup(target_conn, pages=100, sleep=0.01)
-
-        source_conn.close()
-        target_conn.close()
-
-        print(f"[scheduler] Backup successfully written to {target_path}")
-
-        # Rolling retention: keep newest 7 backups, purge older ones
-        existing_backups = sorted(BACKUP_DIR.glob("outbound_backup_*.db"))
-        if len(existing_backups) > 7:
-            for old_backup in existing_backups[:-7]:
-                try:
-                    old_backup.unlink()
-                    print(f"[scheduler] Pruned old backup: {old_backup.name}")
-                except Exception as e:
-                    print(f"[scheduler] Failed to prune {old_backup.name}: {e}")
-
-        return str(target_path)
-
-    except Exception as exc:
-        print(f"[scheduler] SQLite backup failed: {exc}")
-        return ""
-
-
-def run_scheduled_dispatch() -> None:
-    """
-    Triggers batch outreach dispatching during business hours.
-    """
-    print("[scheduler] Running business-hours outreach dispatch sweep...")
+def scheduled_outreach_job() -> None:
+    """Dispatches a batch of cold outreach emails during active business hours."""
+    print("[scheduler] Starting scheduled business-hours outreach dispatch...")
     try:
         result = process_outreach_queue(max_batch=5, pace_sleep=True)
-        print(f"[scheduler] Dispatch sweep complete: {result}")
+        print(f"[scheduler] Outreach cycle finished: {result}")
     except Exception as exc:
-        print(f"[scheduler] Scheduled dispatch error: {exc}")
+        print(f"[scheduler] Outreach execution failed: {exc}")
+
+
+def scheduled_backup_job() -> None:
+    """Executes transaction-safe online SQLite backup to data/backups/."""
+    print("[scheduler] Starting scheduled nightly SQLite online backup...")
+    try:
+        path = backup_database_online()
+        print(f"[scheduler] Backup created successfully: {path}")
+    except Exception as exc:
+        print(f"[scheduler] Backup job failed: {exc}")
+
+
+# Alias for backward compatibility
+backup_sqlite_database = backup_database_online
 
 
 def init_scheduler(app=None) -> BackgroundScheduler:
     """
-    Configures and starts the background job scheduler with timezone awareness.
+    Initializes and starts the APScheduler background daemon.
+    Configured with Asia/Kolkata timezone and max_instances=1.
     """
     global _scheduler
     if _scheduler is not None and _scheduler.running:
@@ -91,22 +59,23 @@ def init_scheduler(app=None) -> BackgroundScheduler:
 
     _scheduler = BackgroundScheduler(timezone=IST)
 
-    # Job 1: Hourly business-hours outreach dispatch (09:00 - 17:00 IST)
+    # Cron 1: Outbound Dispatcher Monday-Friday 09:00 to 17:00 IST
     _scheduler.add_job(
-        func=run_scheduled_dispatch,
+        func=scheduled_outreach_job,
         trigger="cron",
+        day_of_week="mon-fri",
         hour="9-17",
         minute=0,
         id="business_hours_outreach",
-        name="Business Hours Outreach Queue (09:00-17:00 IST)",
+        name="Business-Hours Cold Outreach Dispatch (Mon-Fri 09:00-17:00 IST)",
         max_instances=1,
         coalesce=True,
         replace_existing=True
     )
 
-    # Job 2: Nightly online SQLite database backup (02:00 IST)
+    # Cron 2: Nightly Hot SQLite Backup daily at 02:00 AM IST
     _scheduler.add_job(
-        func=backup_sqlite_database,
+        func=scheduled_backup_job,
         trigger="cron",
         hour=2,
         minute=0,
@@ -118,12 +87,12 @@ def init_scheduler(app=None) -> BackgroundScheduler:
     )
 
     _scheduler.start()
-    print("[scheduler] APScheduler initialized and running with 2 core cron jobs (IST).")
+    print("[scheduler] APScheduler active — 2 production cron jobs registered (Asia/Kolkata).")
     return _scheduler
 
 
 def shutdown_scheduler() -> None:
-    """Gracefully terminates background scheduler threads."""
+    """Gracefully stops the scheduler thread pool."""
     global _scheduler
     if _scheduler is not None and _scheduler.running:
         _scheduler.shutdown(wait=False)
@@ -131,5 +100,6 @@ def shutdown_scheduler() -> None:
 
 
 if __name__ == "__main__":
-    b_path = backup_sqlite_database()
-    print(f"Test backup generated: {b_path}")
+    s = init_scheduler()
+    print("Scheduler running jobs:", [j.id for j in s.get_jobs()])
+    shutdown_scheduler()
