@@ -1,141 +1,76 @@
-{% extends "base.html" %}
-{% block title %}Settings{% endblock %}
-{% block nav_settings %}active{% endblock %}
-
-{% block content %}
-<div class="grid grid-2">
-  <div class="panel">
-    <h2>Distribution & Attribution</h2>
-    <form method="post" action="/settings">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-      <div class="field">
-        <label for="primary_routing_domain">Primary Routing Domain</label>
-        <input id="primary_routing_domain" name="primary_routing_domain"
-               value="{{ settings.primary_routing_domain }}" placeholder="https://www.amazon.in">
-      </div>
-
-      <div class="field">
-        <label for="auto_publish_timeout">Auto-Publish Timeout (minutes)</label>
-        <input id="auto_publish_timeout" name="auto_publish_timeout"
-               value="{{ settings.auto_publish_timeout }}">
-      </div>
-
-      <div class="field">
-        <label for="public_base_url">Public Site URL (for SEO pages + sitemap)</label>
-        <input id="public_base_url" name="public_base_url"
-               value="{{ settings.public_base_url }}" placeholder="https://deals.yourdomain.com">
-        <span class="hint">Public /deals pages double as your Amazon Associates application site.</span>
-      </div>
-
-      <div class="field">
-        <label for="associates_applied_at">Associates Application Date (starts 180-day / 3-sale clock)</label>
-        <input type="date" id="associates_applied_at" name="associates_applied_at"
-               value="{{ settings.associates_applied_at }}">
-        <span class="hint">Set only when you actually apply. Amazon requires 3 qualifying sales within 180 days or the account is permanently rejected.</span>
-      </div>
-
-      <div class="field">
-        <label for="grievance_name">Grievance Contact Name (DPDP §8 — shown on /privacy)</label>
-        <input id="grievance_name" name="grievance_name"
-               value="{{ settings.grievance_name }}" placeholder="e.g. Harsha V — Operator">
-      </div>
-
-      <div class="field">
-        <label for="grievance_contact">Grievance Contact (email or handle)</label>
-        <input id="grievance_contact" name="grievance_contact"
-               value="{{ settings.grievance_contact }}" placeholder="grievances@yourdomain.in">
-      </div>
-
-      <div class="field">
-        <label for="postback_secret">Postback HMAC Secret</label>
-        <input id="postback_secret" name="postback_secret" value="{{ settings.postback_secret }}">
-        <span class="hint">Must match the secret your affiliate network signs postbacks with.</span>
-      </div>
-
-      <div class="field">
-        <label for="commission_rates">Commission Rates (JSON)</label>
-        <textarea id="commission_rates" name="commission_rates" rows="4">{{ settings.commission_rates }}</textarea>
-        <span class="hint">e.g. {"electronics": 0.03, "home_kitchen": 0.035}</span>
-      </div>
-
-      <button type="submit" class="btn primary">Save Settings</button>
-    </form>
-  </div>
-
-  <div class="panel">
-    <h2>Compliance Notes</h2>
-    <ul class="hint">
-      <li>Organic traffic only — no incentivized clicks, cashback loops, or phone spoofing.</li>
-      <li>All outbound copy carries the ASCI affiliate disclosure automatically.</li>
-      <li>Redirects are restricted to the <code>TRUSTED_DOMAINS</code> whitelist.</li>
-      <li>Conversion postbacks require a valid HMAC-SHA256 <code>X-Signature</code>.</li>
-      <li>Duplicate transactions are rejected by the idempotency layer.</li>
-    </ul>
-  </div>
-
-  <div class="panel">
-    <h2>Change Password</h2>
-    <form method="post" action="/settings/password">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="field">
-        <label for="current_password">Current Password</label>
-        <input type="password" id="current_password" name="current_password" autocomplete="current-password" required>
-      </div>
-      <div class="field">
-        <label for="new_password">New Password (min 8 chars)</label>
-        <input type="password" id="new_password" name="new_password" autocomplete="new-password" minlength="8" required>
-      </div>
-      <div class="field">
-        <label for="confirm_password">Confirm New Password</label>
-        <input type="password" id="confirm_password" name="confirm_password" autocomplete="new-password" minlength="8" required>
-      </div>
-      <button type="submit" class="btn">Update Password</button>
-    </form>
-  </div>
-
-  <div class="panel">
-    <h2>UI Ambient Theme</h2>
-    <div class="field">
-      <label for="bg_theme">Dashboard Background</label>
-      <select id="bg_theme">
-        <option value="kelp">Kelp Forest — underwater god-rays</option>
-        <option value="pavilion">Bio-Limestone Pavilion — bone white</option>
-        <option value="train">90s Anime Train — golden-hour countryside</option>
-        <option value="silhouette">Silhouette — PNW mist & pines</option>
-      </select>
-      <span class="hint">Ambient animated backdrop for the whole console (poster + CSS motion, optional MP4 loop).</span>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings - GrowthOps Outbound</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      GrowthOps <span>Outbound</span>
     </div>
-    <button type="button" class="btn primary" onclick="applyBgTheme()">Apply Theme</button>
-    <span id="bg_status" class="hint"></span>
-  </div>
-</div>
-<script>
-  function esc(s) {
-    const d = document.createElement('div');
-    d.textContent = s == null ? '' : String(s);
-    return d.innerHTML;
-  }
-  async function loadBgStatus() {
-    try {
-      const r = await fetch('/api/background/status');
-      const d = await r.json();
-      if (d.status !== 'success') return;
-      document.getElementById('bg_theme').value = d.active;
-    } catch (e) { /* offline / non-fatal */ }
-  }
-  async function applyBgTheme() {
-    const t = document.getElementById('bg_theme').value;
-    const st = document.getElementById('bg_status');
-    try {
-      const r = await fetch('/api/background/' + encodeURIComponent(t), { method: 'POST' });
-      const d = await r.json();
-      st.textContent = esc(d.message || d.status || '');
-      if (d.status === 'success') setTimeout(() => location.reload(), 600);
-    } catch (e) {
-      st.textContent = 'Failed to apply theme.';
-    }
-  }
-  loadBgStatus();
-</script>
-{% endblock %}
+    <ul class="nav-links">
+      <li><a href="/">Overview</a></li>
+      <li><a href="/leads">Pipeline</a></li>
+      <li><a href="/settings" class="active">Settings</a></li>
+    </ul>
+    <div>
+      <a href="/" class="btn btn-secondary">← Back to Overview</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <h1 style="font-size: 1.5rem; margin-bottom: 1.5rem;">System & Outreach Settings</h1>
+
+    <div class="form-card">
+      <form action="/settings" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="form-group">
+          <label>Engine Operation Mode</label>
+          <select name="engine_mode">
+            <option value="self" {% if settings.engine_mode == 'self' %}selected{% endif %}>
+              Self-Growth (Internal Agency Leads)
+            </option>
+            <option value="client" {% if settings.engine_mode == 'client' %}selected{% endif %}>
+              Client-Outreach (Client Delivery Mode)
+            </option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Public Booking URL (Cal.com / Calendly)</label>
+          <input type="url" name="public_booking_url" value="{{ settings.public_booking_url or '' }}" required>
+        </div>
+
+        <div class="form-group">
+          <label>Daily Outreach Hard Cap (Emails/Day)</label>
+          <input type="number" name="daily_email_cap" value="{{ settings.daily_email_cap or '30' }}" min="5" max="100" required>
+        </div>
+
+        <div class="form-group">
+          <label>SMTP Host</label>
+          <input type="text" name="smtp_host" value="{{ config.SMTP_HOST }}" readonly style="opacity: 0.7;">
+        </div>
+
+        <div class="form-group">
+          <label>SMTP Port</label>
+          <input type="text" name="smtp_port" value="{{ config.SMTP_PORT }}" readonly style="opacity: 0.7;">
+        </div>
+
+        <button type="submit" class="btn">💾 Save Configuration</button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

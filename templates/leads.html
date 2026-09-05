@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline Leads - GrowthOps Outbound</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      GrowthOps <span>Outbound</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="/">Overview</a></li>
+      <li><a href="/leads" class="active">Pipeline ({{ leads|length }})</a></li>
+      <li><a href="/settings">Settings</a></li>
+    </ul>
+    <div>
+      <a href="/" class="btn btn-secondary">← Back to Overview</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+      <h1 style="font-size: 1.5rem;">Outbound Pipeline Leads</h1>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Company</th>
+            <th>Contact</th>
+            <th>Email</th>
+            <th>Verification</th>
+            <th>Outreach Status</th>
+            <th>Trigger Signal</th>
+            <th>Added</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for lead in leads %}
+            <tr>
+              <td>#{{ lead.id }}</td>
+              <td><strong>{{ lead.company_name }}</strong></td>
+              <td>{{ lead.contact_name or '—' }}</td>
+              <td><code>{{ lead.email }}</code></td>
+              <td>
+                <span class="status-badge status-{{ lead.verification_status }}">
+                  {{ lead.verification_status }}
+                </span>
+              </td>
+              <td>
+                <span class="status-badge status-{{ lead.status }}">
+                  {{ lead.status }}
+                </span>
+              </td>
+              <td style="font-size: 0.8rem; color: var(--text-muted); max-width: 260px;">
+                {{ lead.trigger_signal }}
+              </td>
+              <td style="font-size: 0.75rem; color: var(--text-muted);">
+                {{ lead.created_at[:10] if lead.created_at else '—' }}
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 3rem;">
+                No leads found in pipeline.
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </main>
+</body>
+</html>

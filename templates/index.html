@@ -1,447 +1,135 @@
-{% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
-{% block nav_index %}active{% endblock %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GrowthOps - Autonomous B2B Lead & Booking Engine</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      GrowthOps <span>Outbound</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="/" class="active">Overview</a></li>
+      <li><a href="/leads">Pipeline ({{ kpi.total_leads }})</a></li>
+      <li><a href="/settings">Settings</a></li>
+    </ul>
+    <div>
+      <span class="badge-mode">Mode: {{ kpi.engine_mode }}</span>
+    </div>
+  </nav>
 
-{% block content %}
-  <!-- Stock-ticker style sector performance strip -->
-  <div class="ticker">
-    <div class="ticker-inner" id="ticker"></div>
-  </div>
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
 
-  <div class="grid grid-4">
-    <div class="panel stat">
-      <div class="label">Human Clicks</div>
-      <div class="value" id="stat-clicks">0</div>
-    </div>
-    <div class="panel stat">
-      <div class="label">Verified Conversions</div>
-      <div class="value" id="stat-conversions">0</div>
-    </div>
-    <div class="panel stat">
-      <div class="label">Commission (₹)</div>
-      <div class="value accent" id="stat-commission">0.00</div>
-    </div>
-    <div class="panel stat">
-      <div class="label">Campaigns</div>
-      <div class="value"><span id="stat-pending" class="amber">0</span> / <span id="stat-published">0</span></div>
-    </div>
-  </div>
-
-  <div class="grid grid-2 mt" id="clock-row" style="display:none">
-    <div class="panel">
-      <div class="flex-between">
-        <h2>⏳ Associates 180-Day Clock</h2>
-        <span class="badge cyan" id="clock-state">—</span>
+    <!-- KPI Metric Cards -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Leads Discovered</div>
+        <div class="stat-value">{{ kpi.total_leads }}</div>
+        <div class="stat-sub">{{ kpi.valid_leads }} verified deliverable</div>
       </div>
-      <div class="stat">
-        <div class="label">Qualifying Sales</div>
-        <div class="value"><span id="clock-sales">0</span><span class="hint"> / 3 required</span></div>
+      <div class="stat-card">
+        <div class="stat-label">Dispatched Today</div>
+        <div class="stat-value">{{ kpi.emails_sent_today }} / 30</div>
+        <div class="stat-sub">Strict deliverability cap</div>
       </div>
-      <div style="background:var(--bg-elevated);border-radius:999px;height:14px;margin:12px 0;overflow:hidden">
-        <div id="clock-bar" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
+      <div class="stat-card">
+        <div class="stat-label">Total Outreach Sent</div>
+        <div class="stat-value">{{ kpi.emails_sent }}</div>
+        <div class="stat-sub">{{ kpi.replies }} direct replies</div>
       </div>
-      <div class="flex-between hint">
-        <span>Days left: <b id="clock-days">—</b></span>
-        <span>Daily rate: <b id="clock-rate">—</b></span>
-      </div>
-      <p class="hint mt">Amazon closes the account permanently if 3 qualifying sales don't land within 180 days of applying.</p>
-    </div>
-
-    <div class="panel">
-      <h2>Channel P&amp;L — What Actually Earns</h2>
-      <table>
-        <thead><tr><th>Channel</th><th>Clicks</th><th>Conv</th><th>CVR</th><th>₹ Commission</th></tr></thead>
-        <tbody id="channel-pnl"></tbody>
-      </table>
-      <div class="hint mt">Double-down on channels with real commission; cut the rest.</div>
-    </div>
-  </div>
-
-  <div class="grid grid-2 mt">
-    <div class="panel">
-      <div class="flex-between">
-        <h2>📈 Channel Growth</h2>
-        <span class="hint">free Bot API telemetry</span>
-      </div>
-      <div class="grid grid-2">
-        <div class="stat">
-          <div class="label">Members Now</div>
-          <div class="value accent" id="growth-now">—</div>
-        </div>
-        <div class="stat">
-          <div class="label">7-Day Change</div>
-          <div class="value" id="growth-week">—</div>
-        </div>
-      </div>
-      <div id="growth-bars" style="display:flex;align-items:flex-end;gap:4px;height:70px;margin:14px 0 6px"></div>
-      <div class="flex-between">
-        <span class="hint" id="growth-hint">Snapshots taken daily at 09:00 IST.</span>
-        <button class="btn" id="growth-manual-btn" style="padding:5px 12px;font-size:12px">+ Manual Count</button>
+      <div class="stat-card" style="border-color: var(--accent-green);">
+        <div class="stat-label">Strategy Calls Booked</div>
+        <div class="stat-value" style="color: var(--accent-green);">{{ kpi.booked_calls }}</div>
+        <div class="stat-sub">Cal.com / Calendly synced</div>
       </div>
     </div>
 
-    <div class="panel">
-      <h2>🚀 Growth Share Kit</h2>
-      <div class="field">
-        <label for="sk-campaign">Deal</label>
-        <select id="sk-campaign"></select>
-      </div>
-      <div class="field">
-        <label for="sk-channels">Channels (comma-separated labels)</label>
-        <input id="sk-channels" value="reddit,x,whatsapp,crosspromo">
-      </div>
-      <button class="btn primary" id="sk-generate">Generate Tracked Links</button>
-      <div id="sk-output" class="mt"></div>
-    </div>
-  </div>
-
-  <div class="grid grid-2 mt">
-    <div class="panel">
-      <div class="flex-between">
-        <h2>A/B Bandit Experiments</h2>
-        <span class="hint">ε=0.20 epsilon-greedy</span>
-      </div>
-      <table>
-        <thead><tr><th>Product</th><th>Variant</th><th>Style</th><th>Clicks</th><th>Conv</th><th>Rate</th></tr></thead>
-        <tbody id="ab-table"></tbody>
-      </table>
-    </div>
-    <div class="panel">
-      <h2>Reliability Shield</h2>
-      <table>
-        <thead><tr><th>Provider</th><th>Breaker</th><th>Quota</th></tr></thead>
-        <tbody id="reliability-table"></tbody>
-      </table>
-      <div class="hint mt">Quota / breaker failures auto-isolate external APIs.</div>
-    </div>
-  </div>
-
-  <div class="grid grid-2 mt">
-    <div class="panel">
-      <h2>Pipeline Console</h2>
-      <div class="field">
-        <label for="sector">Sector</label>
-        <select id="sector"></select>
-      </div>
-      <button class="btn primary" id="run-pipeline">Run Content Pipeline</button>
-      <div class="hint mt" id="pipeline-result"></div>
-    </div>
-    <div class="panel">
-      <h2>Operator Alerts</h2>
-      <div id="alerts-box"></div>
-      <details class="mt">
-        <summary class="hint">Import commission report (Amazon sends no postbacks)</summary>
-        <textarea id="conv-json" rows="6" placeholder='{"rows":[{"transaction_id":"402-xxx","product_id":"B0XXXX","session_id":"","sale_amount":2999,"commission_amount":89.97}]}'></textarea>
-        <button class="btn mt" id="conv-import">Import Rows</button>
-        <div class="hint mt" id="conv-result"></div>
-      </details>
-    </div>
-  </div>
-
-  <div class="panel mt">
-    <div class="flex-between">
-      <h2>🧭 Operator Duties Console</h2>
-      <span id="duty-ready" class="badge amber">CHECKING…</span>
-    </div>
-    <div class="grid grid-2">
-      <ul class="hint" id="duty-list" style="padding-left:18px"></ul>
+    <!-- Manual Control Panel -->
+    <div class="action-panel">
       <div>
-        <div class="stat">
-          <div class="label">Monthly Price Spot-Check</div>
-          <div class="value" style="font-size:20px" id="spot-status">—</div>
-        </div>
-        <button class="btn mt" id="spot-btn" style="width:100%">Log Spot-Check (after reviewing /deals)</button>
-        <div class="stat mt">
-          <div class="label">GST Watch (lifetime commission)</div>
-          <div class="value" style="font-size:20px" id="gst-status">—</div>
-        </div>
+        <h2 class="panel-title">Autonomous Action Controls</h2>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Trigger live lead research or force-dispatch queued campaigns.
+        </p>
+      </div>
+      <div class="btn-group">
+        <form action="/api/harvest" method="POST" style="display: flex; gap: 0.5rem;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="text" name="niche" placeholder="Target Niche (e.g. SaaS)" style="background: var(--bg-card); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;" required value="Digital Agency">
+          <input type="text" name="location" placeholder="Location" style="background: var(--bg-card); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;" required value="Austin TX">
+          <button type="submit" class="btn">⚡ Harvest Leads</button>
+        </form>
+        <form action="/api/dispatch" method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secondary">🚀 Run Dispatch Queue</button>
+        </form>
       </div>
     </div>
-  </div>
 
-  <div class="grid grid-2 mt">
-    <div class="panel">
-      <h2>Dead-Letter Queue</h2>
-    <table>
-      <thead><tr><th>Job ID</th><th>Type</th><th>Error</th><th>Failed At</th></tr></thead>
-      <tbody id="dlq-table"></tbody>
-    </table>
-  </div>
+    <!-- Active Campaign Info & Recent Leads -->
+    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem;">
+      <div class="stat-card">
+        <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">Active Campaign</h3>
+        {% if campaign %}
+          <p style="font-weight: 600; color: var(--accent-cyan);">{{ campaign.name }}</p>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0.5rem 0;">
+            <strong>Target:</strong> {{ campaign.target_niche }}
+          </p>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+            <strong>Value Prop:</strong> {{ campaign.value_prop }}
+          </p>
+          <p style="font-size: 0.85rem;">
+            <strong>Link:</strong> <a href="{{ campaign.booking_link }}" target="_blank" style="color: var(--accent-blue);">{{ campaign.booking_link }}</a>
+          </p>
+        {% else %}
+          <p style="color: var(--text-muted);">No active campaign.</p>
+        {% endif %}
+      </div>
 
-<script>
-function esc(v) {
-  const div = document.createElement('div');
-  div.textContent = v == null ? '' : String(v);
-  return div.innerHTML;
-}
-function badge(state) {
-  state = String(state || '').toLowerCase();
-  if (state === 'closed' || state === 'ok') return '<span class="badge green">' + esc(state) + '</span>';
-  if (state === 'warning' || state === 'half_open') return '<span class="badge amber">' + esc(state) + '</span>';
-  if (state === 'open' || state === 'blocked') return '<span class="badge red">' + esc(state) + '</span>';
-  return '<span class="badge cyan">' + esc(state) + '</span>';
-}
-
-async function getJSON(url) {
-  const res = await fetch(url, { credentials: 'same-origin' });
-  return res.json();
-}
-
-async function loadSectors() {
-  const data = await getJSON('/api/sectors');
-  const sel = document.getElementById('sector');
-  sel.innerHTML = (data || []).map(s => `<option value="${esc(s.key)}">${esc(s.display)}</option>`).join('');
-}
-
-async function loadRevenueClock() {
-  try {
-    const data = await getJSON('/api/revenue_clock');
-    if (data.status !== 'success' || !data.applied_at) return;
-    document.getElementById('clock-row').style.display = '';
-    document.getElementById('clock-sales').textContent = data.qualifying_sales ?? 0;
-    const pct = Math.min(((data.qualifying_sales || 0) / data.sales_required) * 100, 100);
-    document.getElementById('clock-bar').style.width = pct + '%';
-    document.getElementById('clock-days').textContent = data.days_left + ' days';
-    document.getElementById('clock-rate').textContent = (data.daily_sales_rate ?? 0) + '/day';
-    const state = document.getElementById('clock-state');
-    if (data.urgent) { state.textContent = 'URGENT'; state.className = 'badge red'; }
-    else if (data.on_track) { state.textContent = 'ON TRACK'; state.className = 'badge green'; }
-    else { state.textContent = 'BEHIND'; state.className = 'badge amber'; }
-  } catch (e) { /* non-fatal */ }
-}
-
-async function loadPerformance() {
-  const data = await getJSON('/api/performance');
-  if (data.status !== 'success') return;
-
-  const stats = data.stats || {};
-  document.getElementById('stat-clicks').textContent = stats.total_clicks || 0;
-  document.getElementById('stat-conversions').textContent = stats.total_converted || 0;
-  document.getElementById('stat-commission').textContent = Number(stats.total_commission || 0).toFixed(2);
-  document.getElementById('stat-pending').textContent = (data.campaigns || {}).pending || 0;
-  document.getElementById('stat-published').textContent = (data.campaigns || {}).published || 0;
-
-  // Ticker strip — sector EV ranking.
-  const ranking = data.sector_ranking || [];
-  const tickerHtml = ranking.map(r =>
-    `<span class="ticker-item">${esc(r.sector)}&nbsp; <b>EV ${r.ev}</b> · ${r.conversions}/${r.clicks} conv · rate ${(r.conversion_rate * 100).toFixed(2)}%</span>`
-  ).join('');
-  document.getElementById('ticker').innerHTML = tickerHtml + tickerHtml; // duplicate for seamless loop
-
-  // A/B table.
-  const ab = data.ab || {};
-  const abRows = (ab.results || []).map(r =>
-    `<tr><td>${esc(r.product_id)}</td><td>${esc(r.variant)}</td><td>${esc(r.style)}</td><td>${r.clicks}</td><td>${r.conversions}</td><td>${(r.conversion_rate * 100).toFixed(2)}%</td></tr>`
-  ).join('');
-  document.getElementById('ab-table').innerHTML = abRows || '<tr><td colspan="6" class="hint">No A/B data yet — run the pipeline.</td></tr>';
-
-  // Alerts.
-  const alerts = data.alerts || [];
-  document.getElementById('alerts-box').innerHTML = alerts.map(a =>
-    `<div><span class="status-dot ${a.level === 'error' ? 'err' : a.level === 'warning' ? 'warn' : 'ok'}"></span>${esc(a.message)}</div>`
-  ).join('') || '<span class="hint">No recent alerts.</span>';
-
-  // Channel P&L.
-  const ch = (data.stats || {}).by_channel || [];
-  document.getElementById('channel-pnl').innerHTML = ch.map(c =>
-    `<tr><td>${esc(c.channel)}</td><td>${c.clicks}</td><td>${c.conversions}</td><td>${((c.conversion_rate || 0) * 100).toFixed(1)}%</td><td>₹${(c.commission || 0).toFixed(2)}</td></tr>`
-  ).join('') || '<tr><td colspan="5" class="hint">No channel data yet — share tracked /go/ links with ?channel=telegram etc.</td></tr>';
-}
-
-async function loadReliability() {
-  const data = await getJSON('/api/reliability_status');
-  if (data.status !== 'success') return;
-  const breakers = data.breakers || [];
-  const quotas = data.quotas || {};
-  document.getElementById('reliability-table').innerHTML = breakers.map(b => {
-    const q = quotas[b.provider] || {};
-    return `<tr><td>${esc(b.provider)}</td><td>${badge(b.state)}</td><td>${badge(q.status)} ${q.usage ?? 0}/${q.hard_cap ?? '—'}</td></tr>`;
-  }).join('');
-}
-
-async function loadDLQ() {
-  const data = await getJSON('/api/review_dead_letter');
-  const jobs = data.jobs || [];
-  document.getElementById('dlq-table').innerHTML = jobs.map(j =>
-    `<tr><td>${esc(j.id)}</td><td>${esc(j.job_type)}</td><td>${esc(j.error)}</td><td>${esc(j.failed_at)}</td></tr>`
-  ).join('') || '<tr><td colspan="4" class="hint">No dead-letter jobs.</td></tr>';
-}
-
-document.getElementById('run-pipeline').addEventListener('click', async () => {
-  const btn = document.getElementById('run-pipeline');
-  btn.disabled = true;
-  btn.textContent = 'Running…';
-  const resultEl = document.getElementById('pipeline-result');
-  try {
-    const res = await fetch('/api/run_pipeline', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sector: document.getElementById('sector').value })
-    });
-    const data = await res.json();
-    resultEl.textContent = data.status === 'success'
-      ? `✔ Created ${data.campaigns_created} campaigns for ${data.sector}.`
-      : `✘ ${data.message || 'Pipeline failed.'}`;
-  } catch (e) {
-    resultEl.textContent = '✘ Network error.';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run Content Pipeline';
-    loadPerformance(); loadReliability(); loadDLQ();
-  }
-});
-
-async function loadGrowth() {
-  try {
-    const data = await getJSON('/api/growth');
-    if (data.status !== 'success') return;
-    const now = data.current;
-    document.getElementById('growth-now').textContent = now == null ? '—' : Number(now).toLocaleString('en-IN');
-    const wk = data.delta_7d;
-    const wkEl = document.getElementById('growth-week');
-    if (wk == null) { wkEl.textContent = '—'; }
-    else {
-      wkEl.textContent = (wk >= 0 ? '+' : '') + wk;
-      wkEl.style.color = wk > 0 ? 'var(--accent)' : wk < 0 ? 'var(--red)' : 'var(--text)';
-    }
-    // Mini bar chart of history.
-    const hist = (data.history || []).slice(-21);
-    if (hist.length >= 2) {
-      const min = Math.min(...hist.map(h => h.count));
-      const max = Math.max(...hist.map(h => h.count));
-      const span = Math.max(max - min, 1);
-      document.getElementById('growth-bars').innerHTML = hist.map(h => {
-        const pct = 18 + ((h.count - min) / span) * 82;
-        return `<div style="flex:1;height:${pct}%;background:linear-gradient(180deg,var(--cyan),transparent 90%);border-radius:3px 3px 0 0" title="${esc(h.date)}: ${Number(h.count).toLocaleString('en-IN')}"></div>`;
-      }).join('');
-    }
-    if (!data.bot_configured) {
-      document.getElementById('growth-hint').textContent = 'Bot token not set — use Manual Count until then.';
-    }
-  } catch (e) { /* non-fatal */ }
-}
-
-async function loadShareKit() {
-  try {
-    const data = await getJSON('/api/history?limit=50');
-    if (data.status !== 'success') return;
-    const sel = document.getElementById('sk-campaign');
-    sel.innerHTML = (data.campaigns || []).map(c =>
-      `<option value="${c.id}">${esc((c.title || '').slice(0, 60))}${c.status === 'published' ? ' ✓' : ''}</option>`
-    ).join('');
-  } catch (e) { /* non-fatal */ }
-}
-
-document.getElementById('sk-generate').addEventListener('click', async () => {
-  const out = document.getElementById('sk-output');
-  const cid = document.getElementById('sk-campaign').value;
-  if (!cid) { out.innerHTML = '<span class="hint">No campaigns yet — run the pipeline first.</span>'; return; }
-  const channels = encodeURIComponent(document.getElementById('sk-channels').value);
-  try {
-    const res = await fetch(`/api/share_links?campaign_id=${cid}&channels=${channels}`, { credentials: 'same-origin' });
-    const data = await res.json();
-    if (data.status !== 'success') { out.innerHTML = `<span class="hint">✘ ${esc(data.message)}</span>`; return; }
-    const links = (data.links || []).map(l =>
-      `<div class="mt"><div class="hint">${esc(l.channel)}</div>` +
-      `<input readonly value="${esc(l.url)}" onclick="this.select()">` +
-      ` <button class="btn" style="padding:4px 10px;font-size:11px" onclick="copyText(this, '${esc(l.url)}')">Copy</button></div>`
-    ).join('');
-    out.innerHTML = links +
-      `<details class="mt"><summary class="hint">Ready-to-paste deal post</summary><textarea rows="6" readonly onclick="this.select()">${esc(data.caption)}</textarea></details>`;
-  } catch (e) { out.innerHTML = '<span class="hint">Failed to generate.</span>'; }
-});
-
-function copyText(btn, text) {
-  navigator.clipboard.writeText(text).then(() => {
-    const old = btn.textContent; btn.textContent = '✓'; setTimeout(() => btn.textContent = old, 1200);
-  });
-}
-
-document.getElementById('growth-manual-btn').addEventListener('click', async () => {
-  const val = prompt('Enter current member count:');
-  if (!val) return;
-  await fetch('/api/growth/manual', {
-    method: 'POST', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
-    body: JSON.stringify({ count: parseInt(val, 10) })
-  });
-  loadGrowth();
-});
-
-document.getElementById('conv-import').addEventListener('click', async () => {
-  const outEl = document.getElementById('conv-result');
-  try {
-    const payload = JSON.parse(document.getElementById('conv-json').value || '{}');
-    const res = await fetch('/api/conversions/import', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-    if (data.status !== 'success') { outEl.textContent = '✘ ' + (data.message || 'failed'); return; }
-    outEl.textContent = `✔ imported ${data.imported}, duplicates ${data.skipped_duplicates}, failed ${data.failed}`;
-    loadPerformance(); loadRevenueClock();
-  } catch (e) { outEl.textContent = '✘ Invalid JSON.'; }
-});
-
-const DUTY_LABELS = {
-  posts_published_ge_10: '≥10 original posts published (Amazon content bar)',
-  affiliate_tag_configured: 'Associate tag configured (.env)',
-  telegram_channel_ready: 'Telegram bot + channel connected',
-  disclosure_page_live: '/disclosure live',
-  privacy_page_live: '/privacy live',
-  grievance_contact_set: 'Grievance officer set in Settings',
-  https_public_url: 'Public Site URL is HTTPS',
-  postback_secret_rotated: 'Postback secret rotated (not default)'
-};
-
-async function loadDuties() {
-  try {
-    const d = await getJSON('/api/readiness');
-    if (d.status !== 'success') return;
-    const list = document.getElementById('duty-list');
-    list.innerHTML = Object.entries(d.checks).map(([k, v]) =>
-      `<li style="${v ? '' : 'color:var(--amber)'}">${v ? '✅' : '⬜'} ${esc(DUTY_LABELS[k] || k)}</li>`).join('');
-    const badge = document.getElementById('duty-ready');
-    badge.textContent = d.ready_to_apply ? 'READY TO APPLY' : 'IN PROGRESS';
-    badge.className = 'badge ' + (d.ready_to_apply ? 'green' : 'amber');
-
-    const sp = d.spot_check || {};
-    document.getElementById('spot-status').textContent =
-      sp.due ? `DUE (${sp.days_since == null ? 'never done' : sp.days_since + 'd ago'})` : `OK — next in ${sp.cadence_days - (sp.days_since || 0)}d`;
-    document.getElementById('spot-status').style.color = sp.due ? 'var(--amber)' : 'var(--accent)';
-
-    const g = d.gst || {};
-    document.getElementById('gst-status').textContent =
-      '₹' + Number(g.total_commission || 0).toFixed(0) + ' / ₹' + Number(g.threshold || 0).toLocaleString('en-IN');
-    document.getElementById('gst-status').style.color = g.warning ? 'var(--red)' : 'var(--text)';
-  } catch (e) { /* non-fatal */ }
-}
-
-document.getElementById('spot-btn').addEventListener('click', async () => {
-  try {
-    const res = await fetch('/api/compliance/spot_check', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
-      body: JSON.stringify({ reviewed: 5, notes: 'manual review vs live prices' })
-    });
-    const data = await res.json();
-    if (data.status === 'success') loadDuties();
-  } catch (e) { /* non-fatal */ }
-});
-
-loadSectors();
-loadPerformance();
-loadReliability();
-loadDLQ();
-loadRevenueClock();
-loadGrowth();
-loadShareKit();
-loadDuties();
-setInterval(loadPerformance, 15000);
-setInterval(loadReliability, 30000);
-setInterval(loadRevenueClock, 60000);
-setInterval(loadGrowth, 300000);
-</script>
-{% endblock %}
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Email</th>
+              <th>Status</th>
+              <th>Trigger Signal</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for lead in recent_leads %}
+              <tr>
+                <td><strong>{{ lead.company_name }}</strong></td>
+                <td>{{ lead.email }}</td>
+                <td>
+                  <span class="status-badge status-{{ lead.status }}">{{ lead.status }}</span>
+                  <span class="status-badge status-{{ lead.verification_status }}">{{ lead.verification_status }}</span>
+                </td>
+                <td style="font-size: 0.8rem; color: var(--text-muted); max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  {{ lead.trigger_signal }}
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                  No leads harvested yet. Click 'Harvest Leads' to find targets.
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
